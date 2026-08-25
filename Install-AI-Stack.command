@@ -1,0 +1,18 @@
+#!/bin/zsh
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+echo ""
+echo "=============================================="
+echo "          AI STACK — BUILD & INSTALL"
+echo "=============================================="
+echo ""
+"$ROOT/build.sh"
+APP="$ROOT/build/AI Gate.app"
+TARGET="/Applications/AI Gate.app"
+echo ""
+echo "Installing to /Applications..."
+rm -rf "$TARGET"
+ditto "$APP" "$TARGET"
+echo "Done."
+echo "Launching AI Gate..."
+open "$TARGET"
