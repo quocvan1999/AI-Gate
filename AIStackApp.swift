@@ -13,7 +13,7 @@ struct AIStackApp: App {
             MenuBarView()
                 .environmentObject(state)
         } label: {
-            AppLogoImage(kind: .nav, size: 18)
+            MenuBarLogoLabel()
         }
         .menuBarExtraStyle(.window)
 
@@ -793,6 +793,19 @@ struct ProxyStore {
 
 // MARK: - macOS System Settings UI Components
 
+struct MenuBarLogoLabel: View {
+    private static let pointSize: CGFloat = 18
+
+    var body: some View {
+        if let image = AppLogoImage.sizedImage(named: "NavIcon", points: Self.pointSize) {
+            Image(nsImage: image)
+                .renderingMode(.original)
+        } else {
+            Image(systemName: "house.fill")
+        }
+    }
+}
+
 struct AppLogoImage: View {
     enum Kind { case app, nav }
     var kind: Kind = .app
@@ -800,10 +813,11 @@ struct AppLogoImage: View {
 
     var body: some View {
         Group {
-            if let image = Self.load(kind) {
+            if let image = Self.sizedImage(named: kind == .nav ? "NavIcon" : "AppIcon", points: size) {
                 Image(nsImage: image)
                     .resizable()
                     .interpolation(.high)
+                    .renderingMode(.original)
                     .aspectRatio(contentMode: .fit)
             } else {
                 Image(systemName: "house.fill")
@@ -814,17 +828,17 @@ struct AppLogoImage: View {
             }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: kind == .nav ? size / 2 : size * 0.22, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
     }
 
-    static func load(_ kind: Kind) -> NSImage? {
-        let name = kind == .nav ? "NavIcon" : "AppIcon"
-        if let named = NSImage(named: name) { return named }
-        if let url = Bundle.main.url(forResource: name, withExtension: "png"),
-           let image = NSImage(contentsOf: url) {
-            return image
-        }
-        return nil
+    static func sizedImage(named name: String, points: CGFloat) -> NSImage? {
+        guard let original = NSImage(named: name)
+            ?? Bundle.main.url(forResource: name, withExtension: "png").flatMap({ NSImage(contentsOf: $0) })
+        else { return nil }
+        let image = original.copy() as? NSImage ?? original
+        image.size = NSSize(width: points, height: points)
+        image.isTemplate = false
+        return image
     }
 }
 
