@@ -13,7 +13,7 @@ struct AIStackApp: App {
             MenuBarView()
                 .environmentObject(state)
         } label: {
-            Image(systemName: state.overallReady ? "cpu.fill" : "cpu")
+            AppLogoImage(kind: .nav, size: 18)
         }
         .menuBarExtraStyle(.window)
 
@@ -793,6 +793,41 @@ struct ProxyStore {
 
 // MARK: - macOS System Settings UI Components
 
+struct AppLogoImage: View {
+    enum Kind { case app, nav }
+    var kind: Kind = .app
+    var size: CGFloat = 28
+
+    var body: some View {
+        Group {
+            if let image = Self.load(kind) {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                Image(systemName: "house.fill")
+                    .font(.system(size: size * 0.55, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(red: 0.18, green: 0.22, blue: 0.72))
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: kind == .nav ? size / 2 : size * 0.22, style: .continuous))
+    }
+
+    static func load(_ kind: Kind) -> NSImage? {
+        let name = kind == .nav ? "NavIcon" : "AppIcon"
+        if let named = NSImage(named: name) { return named }
+        if let url = Bundle.main.url(forResource: name, withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+        return nil
+    }
+}
+
 struct SquircleIcon: View {
     let symbol: String
     let color: Color
@@ -965,6 +1000,21 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                AppLogoImage(kind: .app, size: 32)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("AI Gate")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text("Control Center")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 4)
+
             // Search Bar
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
@@ -1968,7 +2018,7 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 12) {
             // Header
             HStack(spacing: 10) {
-                SquircleIcon(symbol: "cpu.fill", color: Color(red: 0.20, green: 0.52, blue: 0.98), size: 36, inner: 17, radius: 8)
+                AppLogoImage(kind: .app, size: 36)
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text("AI Gate")

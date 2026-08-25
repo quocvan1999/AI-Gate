@@ -7,6 +7,7 @@
 <key>CFBundleIdentifier</key><string>com.aigate.local</string>
 <key>CFBundleName</key><string>AI Gate</string>
 <key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSUIElement</key><false/>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>

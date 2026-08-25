@@ -45,6 +45,9 @@ if [[ -f "$ROOT/AI-Stack.command" ]]; then
   cp "$ROOT/AI-Stack.command" "$RES/AI-Stack.command"
   chmod +x "$RES/AI-Stack.command"
 fi
+cp "$ROOT/Assets/AppIcon.icns" "$RES/AppIcon.icns"
+cp "$ROOT/Assets/AppIcon.png" "$RES/AppIcon.png"
+cp "$ROOT/Assets/NavIcon.png" "$RES/NavIcon.png"
 
 echo "🔏 Code signing (ad-hoc)..."
 codesign --force --deep --sign - "$APP"
