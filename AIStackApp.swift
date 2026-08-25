@@ -17,7 +17,7 @@ struct AIStackApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        WindowGroup("AI Gate", id: "main") {
+        Window("AI Gate", id: "main") {
             MainWindow()
                 .environmentObject(state)
         }
@@ -38,6 +38,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         AppState.shared.start()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if let window = AppState.mainAppWindow() {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+            return false
+        }
+        return true
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -121,6 +130,13 @@ struct LogEntry: Identifiable, Hashable {
     }
 }
 
+struct ToastItem: Identifiable, Equatable {
+    let id = UUID()
+    let message: String
+    let level: LogLevel
+    let detail: String?
+}
+
 // MARK: - App State
 
 @MainActor
@@ -138,6 +154,8 @@ final class AppState: ObservableObject {
     @Published var envItems: [EnvItem] = []
     @Published var proxies: [ProxyConfig] = []
     @Published var isBootstrapping: Bool = false
+    @Published var toasts: [ToastItem] = []
+    @Published var testingProxyIDs: Set<UUID> = []
     @Published var logs: [LogEntry] = [
         LogEntry(timestamp: Date().addingTimeInterval(-300), level: .info, source: "System", message: "AI Gate initialized and configuration loaded successfully", detail: nil),
         LogEntry(timestamp: Date().addingTimeInterval(-240), level: .info, source: "Environment", message: "Checked runtime dependencies: Darwin, Homebrew, Node v20, 9Router, Go, Git", detail: nil),
@@ -152,6 +170,7 @@ final class AppState: ObservableObject {
     private var logFileOffsets: [String: UInt64] = [:]
     private var quitting = false
     private let proxyStore = ProxyStore()
+    private var toastDismissers: [UUID: DispatchWorkItem] = [:]
 
     var activeProxies: [ProxyConfig] { proxies.filter { $0.enabled } }
     var readyProxiesCount: Int { activeProxies.filter { $0.status == .ready }.count }
@@ -159,6 +178,15 @@ final class AppState: ObservableObject {
 
     var overallReady: Bool {
         routerStatus == .ready && (activeProxies.isEmpty || readyProxiesCount == activeProxies.count)
+    }
+
+    static func mainAppWindow() -> NSWindow? {
+        NSApp.windows.first { window in
+            guard window.canBecomeMain else { return false }
+            let id = window.identifier?.rawValue ?? ""
+            if id == "main" || id.hasPrefix("main-") { return true }
+            return window.title == "AI Gate"
+        }
     }
 
     enum Section: String, CaseIterable, Identifiable {
@@ -384,7 +412,7 @@ final class AppState: ObservableObject {
         isBusy = true
         isBootstrapping = true
         lastAction = "Installing dependencies..."
-        addLog("Starting automated environment installation & setup...", level: .info, source: "Installer")
+        addLog("Starting automated environment installation & setup...", level: .info, source: "Installer", notify: true)
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -419,9 +447,9 @@ final class AppState: ObservableObject {
                     self.isBusy = false
                     self.isBootstrapping = false
                     if p.terminationStatus == 0 {
-                        self.addLog("Environment setup completed successfully! All services are ready.", level: .success, source: "Installer")
+                        self.addLog("Environment setup completed successfully! All services are ready.", level: .success, source: "Installer", notify: true)
                     } else {
-                        self.addLog("Setup exited with status code: \(p.terminationStatus)", level: .error, source: "Installer")
+                        self.addLog("Setup exited with status code: \(p.terminationStatus)", level: .error, source: "Installer", notify: true)
                     }
                     self.checkEnvironment()
                     self.refresh()
@@ -430,7 +458,7 @@ final class AppState: ObservableObject {
                 Task { @MainActor in
                     self.isBusy = false
                     self.isBootstrapping = false
-                    self.addLog("Failed to execute installer command: \(error.localizedDescription)", level: .error, source: "Installer", detail: error.localizedDescription)
+                    self.addLog("Failed to execute installer command: \(error.localizedDescription)", level: .error, source: "Installer", detail: error.localizedDescription, notify: true)
                 }
             }
         }
@@ -438,20 +466,46 @@ final class AppState: ObservableObject {
 
     // MARK: - Process Actions & Logging
 
-    func addLog(_ message: String, level: LogLevel = .info, source: String = "System", detail: String? = nil) {
+    func addLog(_ message: String, level: LogLevel = .info, source: String = "System", detail: String? = nil, notify: Bool = false) {
         let entry = LogEntry(timestamp: Date(), level: level, source: source, message: message, detail: detail)
         logs.insert(entry, at: 0)
         if logs.count > 300 { logs.removeLast() }
+        if notify {
+            showToast(message, level: level, detail: detail)
+        }
+    }
+
+    func showToast(_ message: String, level: LogLevel = .info, detail: String? = nil) {
+        lastAction = message
+        let item = ToastItem(message: message, level: level, detail: detail)
+        toasts.append(item)
+        if toasts.count > 3 {
+            let removed = toasts.removeFirst()
+            toastDismissers[removed.id]?.cancel()
+            toastDismissers[removed.id] = nil
+        }
+        let duration: TimeInterval = (level == .error || level == .warning) ? 5.0 : 3.5
+        let work = DispatchWorkItem { [weak self] in
+            self?.dismissToast(item.id)
+        }
+        toastDismissers[item.id] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+    }
+
+    func dismissToast(_ id: UUID) {
+        toastDismissers[id]?.cancel()
+        toastDismissers[id] = nil
+        toasts.removeAll { $0.id == id }
     }
 
     func clearLogs() {
         logs.removeAll()
-        addLog("Activity logs cleared", level: .info, source: "System")
+        addLog("Activity logs cleared", level: .info, source: "System", notify: true)
     }
 
     func copyAllLogs() {
         let text = logs.reversed().map { $0.fullText }.joined(separator: "\n")
-        copy(text)
+        copy(text, notice: "Copied all logs to clipboard")
     }
 
     func repair() {
@@ -462,7 +516,7 @@ final class AppState: ObservableObject {
         isManuallyStopped = false
         isBusy = true
         lastAction = "Starting services..."
-        addLog("Starting all services and enabling auto-recovery monitoring...", level: .info, source: "System")
+        addLog("Starting all services and enabling auto-recovery monitoring...", level: .info, source: "System", notify: true)
         launchBackendIfNeeded()
         refresh()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
@@ -475,11 +529,11 @@ final class AppState: ObservableObject {
         isManuallyStopped = false
         isBusy = true
         lastAction = "Restarting services..."
-        addLog("Restarting all services (9Router Gateway & Proxies)...", level: .info, source: "System")
+        addLog("Restarting all services (9Router Gateway & Proxies)...", level: .info, source: "System", notify: true)
         runManager("--restart") { [weak self] output in
             Task { @MainActor in
                 self?.isBusy = false
-                self?.addLog("Services restarted successfully", level: .success, source: "System", detail: output.isEmpty ? nil : output)
+                self?.addLog("Services restarted successfully", level: .success, source: "System", detail: output.isEmpty ? nil : output, notify: true)
                 self?.refresh()
             }
         }
@@ -489,7 +543,7 @@ final class AppState: ObservableObject {
         isManuallyStopped = true
         isBusy = true
         lastAction = "Services stopped (Auto-recovery paused)."
-        addLog("All services safely stopped (Auto-recovery paused)", level: .warning, source: "System")
+        addLog("All services safely stopped (Auto-recovery paused)", level: .warning, source: "System", notify: true)
         
         backend?.terminate()
         backend = nil
@@ -519,16 +573,16 @@ final class AppState: ObservableObject {
     func openDashboard() {
         guard routerStatus == .ready, let url = URL(string: "http://127.0.0.1:20128/dashboard") else {
             lastAction = "9Router is not ready."
-            addLog("Cannot open Dashboard: 9Router Gateway is offline", level: .warning, source: "9Router")
+            addLog("Cannot open Dashboard: 9Router Gateway is offline", level: .warning, source: "9Router", notify: true)
             return
         }
         NSWorkspace.shared.open(url)
     }
 
-    func copy(_ value: String) {
+    func copy(_ value: String, notice: String = "Copied to clipboard") {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
-        lastAction = "Copied to clipboard."
+        showToast(notice, level: .success)
     }
 
     // MARK: - Dynamic Proxies CRUD
@@ -536,7 +590,7 @@ final class AppState: ObservableObject {
     func addProxy(_ proxy: ProxyConfig) {
         proxies.append(proxy)
         saveProxies()
-        addLog("Added new Proxy: \(proxy.name) (Port \(proxy.port))", level: .success, source: "ProxyManager")
+        addLog("Added new Proxy: \(proxy.name) (Port \(proxy.port))", level: .success, source: "ProxyManager", notify: true)
         refresh()
     }
 
@@ -549,7 +603,7 @@ final class AppState: ObservableObject {
                 killPort(proxy.port)
                 proxies[idx].status = .down
             }
-            addLog("Updated configuration for \(proxy.name)", level: .info, source: "ProxyManager")
+            addLog("Updated configuration for \(proxy.name)", level: .info, source: "ProxyManager", notify: true)
             refresh()
         }
     }
@@ -558,15 +612,18 @@ final class AppState: ObservableObject {
         killPort(proxy.port)
         proxies.removeAll { $0.id == proxy.id }
         saveProxies()
-        addLog("Deleted Proxy: \(proxy.name)", level: .warning, source: "ProxyManager")
+        addLog("Deleted Proxy: \(proxy.name)", level: .warning, source: "ProxyManager", notify: true)
         refresh()
     }
 
     func testProxy(_ proxy: ProxyConfig) {
+        guard !testingProxyIDs.contains(proxy.id) else { return }
         guard let url = URL(string: proxy.healthUrl) else {
-            addLog("Invalid Health URL: \(proxy.healthUrl)", level: .error, source: proxy.name)
+            addLog("Invalid Health URL: \(proxy.healthUrl)", level: .error, source: proxy.name, notify: true)
             return
         }
+        testingProxyIDs.insert(proxy.id)
+        lastAction = "Testing \(proxy.name)..."
         addLog("Testing connection to \(proxy.name) at \(proxy.healthUrl)...", level: .info, source: proxy.name)
         var request = URLRequest(url: url)
         request.timeoutInterval = 3
@@ -576,17 +633,18 @@ final class AppState: ObservableObject {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             Task { @MainActor in
                 guard let self = self else { return }
+                self.testingProxyIDs.remove(proxy.id)
+                let ok = (200..<400).contains(code)
                 if let i = self.proxies.firstIndex(where: { $0.id == proxy.id }) {
-                    let ok = (200..<400).contains(code)
                     self.proxies[i].status = ok ? .ready : .down
                     self.proxies[i].latency = ok ? latencyMs : nil
-                    if ok {
-                        self.addLog("\(proxy.name) responded successfully (HTTP \(code), latency \(latencyMs) ms)", level: .success, source: proxy.name)
-                    } else if let err = error {
-                        self.addLog("Connection to \(proxy.name) failed: \(err.localizedDescription)", level: .error, source: proxy.name, detail: "URL: \(proxy.healthUrl)")
-                    } else {
-                        self.addLog("\(proxy.name) returned HTTP \(code)", level: .warning, source: proxy.name, detail: "URL: \(proxy.healthUrl)")
-                    }
+                }
+                if ok {
+                    self.addLog("\(proxy.name) responded successfully (HTTP \(code), latency \(latencyMs) ms)", level: .success, source: proxy.name, notify: true)
+                } else if let err = error {
+                    self.addLog("Connection to \(proxy.name) failed: \(err.localizedDescription)", level: .error, source: proxy.name, detail: "URL: \(proxy.healthUrl)", notify: true)
+                } else {
+                    self.addLog("\(proxy.name) returned HTTP \(code)", level: .warning, source: proxy.name, detail: "URL: \(proxy.healthUrl)", notify: true)
                 }
             }
         }.resume()
@@ -868,6 +926,7 @@ struct MainWindow: View {
     var body: some View {
         NavigationSplitView {
             Sidebar()
+                .navigationSplitViewColumnWidth(min: 230, ideal: 260, max: 340)
         } detail: {
             ZStack {
                 Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
@@ -882,10 +941,18 @@ struct MainWindow: View {
                     LogsView()
                 }
             }
+            .overlay(alignment: .bottom) {
+                ToastStackView()
+                    .padding(.bottom, 22)
+            }
         }
         .navigationTitle("AI Gate")
         .sheet(isPresented: $showingAddProxy) {
             ProxyEditor(proxy: nil) { p in state.addProxy(p) }
+                .overlay(alignment: .bottom) {
+                    ToastStackView()
+                        .padding(.bottom, 16)
+                }
         }
     }
 }
@@ -899,44 +966,44 @@ struct Sidebar: View {
     var body: some View {
         VStack(spacing: 0) {
             // Search Bar
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 12))
+                    .font(.system(size: 13))
                     .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                 TextField("Search", text: $searchText)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 12))
+                    .font(.system(size: 13))
                 if !searchText.isEmpty {
                     Button(action: { searchText = "" }) {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 12))
+                            .font(.system(size: 13))
                             .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
             .background(Color(nsColor: .controlBackgroundColor).opacity(0.6))
-            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .strokeBorder(Color(nsColor: .separatorColor).opacity(0.4), lineWidth: 0.8)
             )
-            .padding(.horizontal, 10)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
 
             List(selection: $state.selectedSection) {
                 Section {
                     ForEach(filtered(AppState.Section.allCases)) { sec in
                         NavigationLink(value: sec) {
-                            HStack(spacing: 10) {
-                                SquircleIcon(symbol: sec.icon, color: sec.accentColor, size: 22, inner: 11, radius: 5)
+                            HStack(spacing: 12) {
+                                SquircleIcon(symbol: sec.icon, color: sec.accentColor, size: 26, inner: 13, radius: 6)
                                 Text(sec.rawValue)
-                                    .font(.system(size: 13, weight: .regular))
+                                    .font(.system(size: 14, weight: .medium))
                             }
-                            .padding(.vertical, 2)
+                            .padding(.vertical, 4)
                         }
                     }
                 }
@@ -1144,11 +1211,7 @@ struct OverviewView: View {
                                     color: proxy.enabled && proxy.status == .ready ? .green : .orange
                                 )
 
-                                Button("Test") {
-                                    state.testProxy(proxy)
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
+                                TestProxyButton(proxy: proxy)
 
                                 Button("Copy API") {
                                     state.copy("http://127.0.0.1:\(proxy.port)/v1")
@@ -1234,7 +1297,11 @@ struct EnvironmentView: View {
                         Button {
                             state.runBootstrap()
                         } label: {
-                            Label("Click Auto Install", systemImage: "wrench.and.screwdriver.fill")
+                            if state.isBusy {
+                                Label("Installing...", systemImage: "hourglass")
+                            } else {
+                                Label("Click Auto Install", systemImage: "wrench.and.screwdriver.fill")
+                            }
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(state.isBusy)
@@ -1328,7 +1395,6 @@ struct ProxiesView: View {
                                     updated.enabled.toggle()
                                     state.updateProxy(updated)
                                 },
-                                onTest: { state.testProxy(proxy) },
                                 onEdit: { selectedProxy = proxy },
                                 onDelete: { state.deleteProxy(proxy) }
                             )
@@ -1345,6 +1411,10 @@ struct ProxiesView: View {
         }
         .sheet(item: $selectedProxy) { p in
             ProxyEditor(proxy: p) { updated in state.updateProxy(updated) }
+                .overlay(alignment: .bottom) {
+                    ToastStackView()
+                        .padding(.bottom, 16)
+                }
         }
     }
 }
@@ -1352,7 +1422,6 @@ struct ProxiesView: View {
 struct ProxyRowView: View {
     let proxy: ProxyConfig
     let onToggle: () -> Void
-    let onTest: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
     @State private var showingGuide = false
@@ -1392,9 +1461,7 @@ struct ProxyRowView: View {
             }
 
             HStack(spacing: 8) {
-                Button("Test") { onTest() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                TestProxyButton(proxy: proxy)
 
                 Button("Client Guide") { showingGuide = true }
                     .buttonStyle(.bordered)
@@ -1460,6 +1527,10 @@ struct ClientGuideSheet: View {
         }
         .padding(20)
         .frame(width: 480, height: 260)
+        .overlay(alignment: .bottom) {
+            ToastStackView()
+                .padding(.bottom, 16)
+        }
     }
 }
 
@@ -1785,6 +1856,108 @@ struct LogItemRow: View {
     }
 }
 
+struct TestProxyButton: View {
+    @EnvironmentObject private var state: AppState
+    let proxy: ProxyConfig
+
+    private var isTesting: Bool { state.testingProxyIDs.contains(proxy.id) }
+
+    var body: some View {
+        Button {
+            state.testProxy(proxy)
+        } label: {
+            if isTesting {
+                HStack(spacing: 5) {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text("Testing")
+                }
+            } else {
+                Text("Test")
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(isTesting)
+        .help(isTesting ? "Testing proxy connection..." : "Test proxy health URL")
+    }
+}
+
+struct ToastStackView: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ForEach(state.toasts) { toast in
+                ToastBanner(toast: toast) {
+                    state.dismissToast(toast.id)
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 0.86), value: state.toasts.map(\.id))
+        .allowsHitTesting(!state.toasts.isEmpty)
+    }
+}
+
+struct ToastBanner: View {
+    let toast: ToastItem
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: iconName)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(toast.level.color)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(toast.message)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color(nsColor: .labelColor))
+                    .fixedSize(horizontal: false, vertical: true)
+                if let detail = toast.detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: 440)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(toast.level.color.opacity(0.35), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.16), radius: 14, y: 4)
+        .onTapGesture(perform: onDismiss)
+    }
+
+    private var iconName: String {
+        switch toast.level {
+        case .success: return "checkmark.circle.fill"
+        case .error: return "xmark.circle.fill"
+        case .warning: return "exclamationmark.triangle.fill"
+        case .info, .all: return "info.circle.fill"
+        }
+    }
+}
+
 // MARK: - Menu Bar View
 
 struct MenuBarView: View {
@@ -1948,13 +2121,19 @@ struct MenuBarView: View {
         }
         .padding(14)
         .frame(width: 320)
+        .overlay(alignment: .bottom) {
+            ToastStackView()
+                .padding(.bottom, 44)
+        }
     }
 
     private func openMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
-        openWindow(id: "main")
-        DispatchQueue.main.async {
-            NSApp.windows.first(where: { $0.title == "AI Gate" })?.makeKeyAndOrderFront(nil)
+        if let window = AppState.mainAppWindow() {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+            return
         }
+        openWindow(id: "main")
     }
 }

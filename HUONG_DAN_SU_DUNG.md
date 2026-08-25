@@ -90,11 +90,13 @@ Khi gửi file `AI-Gate-Installer.dmg` cho máy Mac khác tải từ Internet (G
 
 Hãy hướng dẫn người nhận thực hiện **1 trong 2 cách sau** để mở:
 
-### Cách 1: Mở bằng chuột phải (Đơn giản nhất)
+### Cách 1: Một click cài đặt (Khuyên dùng)
 
-1. Mở file `.dmg` và kéo icon **AI Gate** vào thư mục **Applications**.
-2. Vào thư mục **Applications**, **chuột phải (hoặc nhấn giữ phím Control + Click)** vào `AI Gate.app` > chọn **Open**.
-3. Nhấn nút **Open** trên bảng thông báo hiện ra.
+1. Mở file `AI-Gate-Installer.dmg`.
+2. **Chuột phải** vào **Cài đặt AI Gate** > chọn **Open** (lần đầu macOS có thể hỏi xác nhận).
+3. Script sẽ copy app vào **Applications**, **tự tháo ổ đĩa ảo**, **tự xoá file `.dmg`**, rồi mở AI Gate.
+
+_(Vẫn có thể kéo icon **AI Gate** vào thư mục **Applications** như DMG kéo-thả thông thường; cách đó không tự xoá file cài.)_
 
 ### Cách 2: Xử lý qua Terminal (Nếu bị báo App is damaged / Bị hỏng)
 

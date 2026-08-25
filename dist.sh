@@ -55,6 +55,8 @@ DMG_TEMP="$TMP_DIR/dmg_content"
 mkdir -p "$DMG_TEMP"
 cp -R "$APP" "$DMG_TEMP/"
 ln -s /Applications "$DMG_TEMP/Applications"
+cp "$ROOT/Install-From-DMG.command" "$DMG_TEMP/Cài đặt AI Gate.command"
+chmod +x "$DMG_TEMP/Cài đặt AI Gate.command"
 
 hdiutil create -volname "AI Gate" -srcfolder "$DMG_TEMP" -ov -format UDZO "$DIST/$DMG_NAME" >/dev/null
 
