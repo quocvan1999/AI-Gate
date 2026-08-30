@@ -48,6 +48,8 @@ fi
 cp "$ROOT/Assets/AppIcon.icns" "$RES/AppIcon.icns"
 cp "$ROOT/Assets/AppIcon.png" "$RES/AppIcon.png"
 cp "$ROOT/Assets/NavIcon.png" "$RES/NavIcon.png"
+cp "$ROOT/Assets/cursor_apply_config.py" "$RES/cursor_apply_config.py"
+cp "$ROOT/Assets/cursor_path_health.py" "$RES/cursor_path_health.py"
 
 echo "🔏 Code signing (ad-hoc)..."
 codesign --force --deep --sign - "$APP"

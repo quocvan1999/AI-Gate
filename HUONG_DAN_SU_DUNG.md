@@ -9,10 +9,27 @@ Tài liệu này hướng dẫn chi tiết cách chạy trong quá trình phát 
 Mọi câu lệnh Terminal bên dưới **BẮT BUỘC** phải được thực thi tại **thư mục gốc của dự án**:
 
 ```zsh
-cd /Users/lyquocvan/Downloads/AI-Stack-Native-v7
+cd "/Users/lyquocvan/Documents/My Project/AI-Gate"
 ```
 
-_(Hoặc mở Terminal, gõ `cd ` rồi kéo thả thư mục `AI-Stack-Native-v7` vào cửa sổ Terminal và nhấn Enter)._
+_(Hoặc mở Terminal, gõ `cd ` rồi kéo thả thư mục dự án vào cửa sổ Terminal và nhấn Enter)._
+
+---
+
+## 🔗 CURSOR BRIDGE — AUTO SETUP & TRẠNG THÁI
+
+1. Trong AI Gate → **Cursor Bridge** → **Enable Bridge** (hoặc Continue Setup).
+2. App tự bật Tailscale Funnel và **Apply to Cursor** (ghi Base URL + API key 9Router + model vào Cursor). Cursor sẽ được quit/reopen một lần.
+3. Tab Overview / Cursor Bridge hiện checklist tách **Local** (Codex/`localhost`) vs **Cursor path** (Funnel public + Cursor config + combo providers). Banner chỉ “Operational” đủ khi cả hai ổn (nếu Bridge đang bật).
+4. Nút **Test Cursor path** / **Apply to Cursor** dùng khi Funnel URL đổi hoặc Cursor lệch cấu hình.
+5. **Quit AI Gate** hoặc nút **Stop**: tắt hết Funnel + 9Router + proxies + auto-heal (không tự bật lại cho đến khi Start / Enable Bridge).
+
+Lệnh thủ công:
+
+```zsh
+./AI-Stack.command --bridge-health --model my-combo
+./AI-Stack.command --cursor-apply --model my-combo
+```
 
 ---
 
@@ -24,7 +41,7 @@ Trong quá trình code giao diện hoặc tính năng trong file `AIStackApp.swi
 
 1. Mở Terminal và chuyển vào thư mục dự án:
    ```zsh
-   cd /Users/lyquocvan/Downloads/AI-Stack-Native-v7
+   cd "/Users/lyquocvan/Documents/My Project/AI-Gate"
    ```
 2. Chạy lệnh:
    ```zsh

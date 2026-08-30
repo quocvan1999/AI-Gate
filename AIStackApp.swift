@@ -137,6 +137,62 @@ struct ToastItem: Identifiable, Equatable {
     let detail: String?
 }
 
+struct CursorBridgeStatus: Equatable {
+    var installed: Bool = false
+    var loggedIn: Bool = false
+    var funnelEnabled: Bool = false
+    var wanted: Bool = false
+    var autoHeal: Bool = true
+    var publicUrl: String = ""
+    var baseUrl: String = ""
+    var targetPort: Int = 20128
+    var message: String = "Đang kiểm tra Cursor Bridge..."
+    var lastHealAt: String = ""
+    var updatedAt: String = ""
+
+    var isReady: Bool { funnelEnabled && !baseUrl.isEmpty }
+    var isRecovering: Bool { wanted && autoHeal && !funnelEnabled }
+}
+
+struct ProviderHealthItem: Equatable, Identifiable {
+    var id: String { model }
+    var model: String = ""
+    var provider: String = ""
+    var name: String = ""
+    var active: Bool = false
+    var testStatus: String = ""
+    var errorCode: Int? = nil
+    var lastError: String = ""
+    var usable: Bool = false
+}
+
+struct PathHealthStatus: Equatable {
+    var localRouter: Bool = false
+    var localApi: Bool = false
+    var localDashboardMs: Int = 0
+    var localApiMs: Int = 0
+    var funnelCli: Bool = false
+    var wanted: Bool = false
+    var baseUrl: String = ""
+    var publicReachable: Bool = false
+    var publicStatus: Int = 0
+    var publicMs: Int = 0
+    var publicAuthenticated: Bool = false
+    var publicAuthStatus: Int = 0
+    var cursorConfigured: Bool = false
+    var cursorMessage: String = ""
+    var cursorBaseUrl: String = ""
+    var comboName: String = "my-combo"
+    var comboHealthy: Bool = false
+    var usableProviders: Int = 0
+    var providerCount: Int = 0
+    var providers: [ProviderHealthItem] = []
+    var cursorPathOk: Bool = false
+    var message: String = "Đang kiểm tra đường kết nối..."
+
+    var localOk: Bool { localRouter }
+}
+
 // MARK: - App State
 
 @MainActor
@@ -156,6 +212,19 @@ final class AppState: ObservableObject {
     @Published var isBootstrapping: Bool = false
     @Published var toasts: [ToastItem] = []
     @Published var testingProxyIDs: Set<UUID> = []
+    @Published var bridgeStatus = CursorBridgeStatus()
+    @Published var pathHealth = PathHealthStatus()
+    @Published var bridgeBusy: Bool = false
+    @Published var bridgeHealing: Bool = false
+    @Published var bridgeSetupRunning: Bool = false
+    @Published var cursorApplyBusy: Bool = false
+    @Published var cursorApplyMessage: String = ""
+    @Published var nineRouterApiKey: String = ""
+    @Published var availableModels: [String] = []
+    @Published var selectedBridgeModel: String = "my-combo"
+    private var lastBridgeHealAttempt: Date? = nil
+    private var previousBridgeReady: Bool? = nil
+    private var healthBusy: Bool = false
     @Published var logs: [LogEntry] = [
         LogEntry(timestamp: Date().addingTimeInterval(-300), level: .info, source: "System", message: "AI Gate initialized and configuration loaded successfully", detail: nil),
         LogEntry(timestamp: Date().addingTimeInterval(-240), level: .info, source: "Environment", message: "Checked runtime dependencies: Darwin, Homebrew, Node v20, 9Router, Go, Git", detail: nil),
@@ -170,6 +239,7 @@ final class AppState: ObservableObject {
     private var logFileOffsets: [String: UInt64] = [:]
     private var quitting = false
     private let proxyStore = ProxyStore()
+    private let bridgeStore = CursorBridgeStore()
     private var toastDismissers: [UUID: DispatchWorkItem] = [:]
 
     var activeProxies: [ProxyConfig] { proxies.filter { $0.enabled } }
@@ -177,7 +247,51 @@ final class AppState: ObservableObject {
     var envReadyCount: Int { envItems.filter { $0.isReady }.count }
 
     var overallReady: Bool {
-        routerStatus == .ready && (activeProxies.isEmpty || readyProxiesCount == activeProxies.count)
+        let localOk = routerStatus == .ready && (activeProxies.isEmpty || readyProxiesCount == activeProxies.count)
+        guard localOk else { return false }
+        // When Bridge is wanted, Cursor path must also be healthy.
+        if bridgeStatus.wanted {
+            return pathHealth.cursorPathOk || (pathHealth.publicReachable && pathHealth.cursorConfigured)
+        }
+        return true
+    }
+
+    var statusHeadline: String {
+        if routerStatus != .ready {
+            return "Attention Required"
+        }
+        if overallReady { return "System Operational" }
+        if bridgeStatus.wanted && !pathHealth.cursorPathOk {
+            return "Local OK • Cursor path issue"
+        }
+        return "Attention Required"
+    }
+
+    var statusDetailLine: String {
+        if overallReady {
+            let bridgeNote = bridgeStatus.wanted
+                ? " • Cursor path OK"
+                : ""
+            return "9Router & \(readyProxiesCount)/\(proxies.count) proxies online\(bridgeNote)"
+        }
+        if !pathHealth.message.isEmpty { return pathHealth.message }
+        return lastAction
+    }
+
+    var cursorSetupSnippet: String {
+        let base = bridgeStatus.baseUrl.isEmpty ? "https://YOUR-MACHINE.ts.net/v1" : bridgeStatus.baseUrl
+        let key = nineRouterApiKey.isEmpty ? "(open 9router dashboard → copy API key)" : nineRouterApiKey
+        let model = selectedBridgeModel.isEmpty ? "my-combo" : selectedBridgeModel
+        return """
+        Cursor → Settings → Models
+        1) OpenAI API Key: ON
+        2) Override OpenAI Base URL:
+        \(base)
+        3) API Key:
+        \(key)
+        4) Add custom model:
+        \(model)
+        """
     }
 
     static func mainAppWindow() -> NSWindow? {
@@ -191,6 +305,7 @@ final class AppState: ObservableObject {
 
     enum Section: String, CaseIterable, Identifiable {
         case overview = "Overview"
+        case cursorBridge = "Cursor Bridge"
         case proxies = "Proxies"
         case environment = "Environment"
         case logs = "Logs"
@@ -199,6 +314,7 @@ final class AppState: ObservableObject {
         var icon: String {
             switch self {
             case .overview: return "house.fill"
+            case .cursorBridge: return "link.circle.fill"
             case .proxies: return "antenna.radiowaves.left.and.right"
             case .environment: return "cube.fill"
             case .logs: return "doc.text.fill"
@@ -207,6 +323,7 @@ final class AppState: ObservableObject {
         var accentColor: Color {
             switch self {
             case .overview: return Color(red: 0.20, green: 0.52, blue: 0.98)
+            case .cursorBridge: return Color(red: 0.18, green: 0.72, blue: 0.55)
             case .proxies: return Color(red: 0.38, green: 0.34, blue: 0.93)
             case .environment: return Color(red: 0.96, green: 0.57, blue: 0.13)
             case .logs: return Color(red: 0.47, green: 0.47, blue: 0.53)
@@ -217,14 +334,19 @@ final class AppState: ObservableObject {
     func start() {
         guard !quitting else { return }
         loadProxies()
+        selectedBridgeModel = bridgeStore.loadSelectedModel(default: "my-combo")
         checkEnvironment()
         launchBackendIfNeeded()
         refresh()
+        refreshCursorBridge()
         startLiveLogStreaming()
 
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+            Task { @MainActor in
+                self?.refresh()
+                self?.refreshCursorBridge()
+            }
         }
     }
 
@@ -388,6 +510,26 @@ final class AppState: ObservableObject {
             let gitOk = !gitVer.contains("Missing") && !gitVer.isEmpty
             items.append(EnvItem(name: "Git CLI", category: "Version Control", required: "v2.0+", installed: gitOk ? gitVer : "Not installed", isReady: gitOk, iconName: "arrow.triangle.branch", statusDescription: gitOk ? "Ready" : "Not installed"))
 
+            // 7. Tailscale (optional — required for Cursor Bridge)
+            let tsPath = self.execShell("""
+            \(envPath)
+            if [ -x "/Applications/Tailscale.app/Contents/MacOS/Tailscale" ]; then echo "/Applications/Tailscale.app/Contents/MacOS/Tailscale"; \
+            elif command -v tailscale >/dev/null 2>&1; then command -v tailscale; \
+            else echo Missing; fi
+            """)
+            let tsOk = !tsPath.contains("Missing") && !tsPath.isEmpty
+            let tsState = tsOk ? self.execShell("\"\(tsPath)\" status --json 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get(\"BackendState\",\"\"))' 2>/dev/null || echo unknown") : "Missing"
+            let tsReady = tsOk && tsState == "Running"
+            items.append(EnvItem(
+                name: "Tailscale",
+                category: "Cursor Bridge Tunnel",
+                required: "App + Login",
+                installed: tsOk ? (tsReady ? "Running" : "Installed (\(tsState.isEmpty ? "NeedsLogin" : tsState))") : "Not installed",
+                isReady: tsReady,
+                iconName: "network",
+                statusDescription: tsReady ? "Ready for Funnel" : (tsOk ? "Open Tailscale and log in" : "Install Tailscale (free)")
+            ))
+
             Task { @MainActor in
                 self.envItems = items
             }
@@ -542,26 +684,36 @@ final class AppState: ObservableObject {
     func stopAll() {
         isManuallyStopped = true
         isBusy = true
-        lastAction = "Services stopped (Auto-recovery paused)."
-        addLog("All services safely stopped (Auto-recovery paused)", level: .warning, source: "System", notify: true)
-        
+        lastAction = "Stopping all services (Funnel + 9Router + proxies)..."
+        addLog("Stopping all related services: Funnel, 9Router, proxies, auto-heal...", level: .warning, source: "System", notify: true)
+
         backend?.terminate()
         backend = nil
-        
+
         for p in proxies {
             killPort(p.port)
         }
         killPort(8318)
         killPort(20128)
-        
+
         runManager("--shutdown") { [weak self] output in
             Task { @MainActor in
                 self?.isBusy = false
                 self?.routerStatus = .down
+                self?.bridgeStatus.funnelEnabled = false
+                self?.bridgeStatus.wanted = false
+                self?.bridgeStatus.baseUrl = ""
+                self?.bridgeStatus.publicUrl = ""
+                self?.bridgeStatus.message = "Đã tắt hết dịch vụ (Funnel + gateway + proxies)."
+                self?.pathHealth = PathHealthStatus(
+                    message: "Đã dừng toàn bộ — Enable Bridge / Start lại khi cần."
+                )
                 for i in self?.proxies.indices ?? 0..<0 {
                     self?.proxies[i].status = .down
                 }
                 self?.updateRefreshState()
+                self?.addLog("All related services stopped (no auto-restore until Start/Enable)", level: .success, source: "System", notify: true)
+                self?.refreshCursorBridge()
             }
         }
     }
@@ -579,10 +731,358 @@ final class AppState: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    func openTailscaleInstall() {
+        if let url = URL(string: "https://tailscale.com/download/mac") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    func openTailscaleApp() {
+        let app = "/Applications/Tailscale.app"
+        if FileManager.default.fileExists(atPath: app) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: app))
+        } else {
+            openTailscaleInstall()
+        }
+    }
+
+    func openTailscaleAdminFunnel() {
+        if let url = URL(string: "https://login.tailscale.com/admin/acls") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     func copy(_ value: String, notice: String = "Copied to clipboard") {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
         showToast(notice, level: .success)
+    }
+
+    func copyCursorSetup() {
+        copy(cursorSetupSnippet, notice: "Copied Cursor setup instructions")
+    }
+
+    func setBridgeModel(_ model: String) {
+        selectedBridgeModel = model
+        bridgeStore.saveSelectedModel(model)
+    }
+
+    // MARK: - Cursor Bridge
+
+    func refreshCursorBridge() {
+        guard !quitting else { return }
+        loadNineRouterCredentials()
+
+        runManager("--bridge-status") { [weak self] output in
+            Task { @MainActor in
+                guard let self = self else { return }
+                if let parsed = Self.parseBridgeStatus(output) {
+                    let wasReady = self.previousBridgeReady
+                    self.bridgeStatus = parsed
+                    self.previousBridgeReady = parsed.isReady
+
+                    if wasReady == true && !parsed.isReady && parsed.wanted {
+                        self.addLog("Cursor Bridge Funnel dropped — auto-heal will retry", level: .warning, source: "CursorBridge", detail: parsed.message)
+                    } else if wasReady == false && parsed.isReady && parsed.wanted {
+                        self.addLog("Cursor Bridge Funnel restored: \(parsed.baseUrl)", level: .success, source: "CursorBridge")
+                    }
+
+                    // App-side nudge if shell loop hasn't healed yet (e.g. right after wake).
+                    if parsed.isRecovering && !self.bridgeBusy && !self.isManuallyStopped {
+                        self.maybeRequestBridgeHeal()
+                    }
+                }
+                self.refreshPathHealth()
+            }
+        }
+    }
+
+    func refreshPathHealth() {
+        guard !quitting, !healthBusy else { return }
+        healthBusy = true
+        let model = selectedBridgeModel.isEmpty ? "my-combo" : selectedBridgeModel
+        runManager("--bridge-health", extraArgs: ["--model", model]) { [weak self] output in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.healthBusy = false
+                if let parsed = Self.parsePathHealth(output) {
+                    self.pathHealth = parsed
+                }
+            }
+        }
+    }
+
+    func applyCursorConfig(relaunchNotice: Bool = true) {
+        guard !cursorApplyBusy else { return }
+        cursorApplyBusy = true
+        let model = selectedBridgeModel.isEmpty ? "my-combo" : selectedBridgeModel
+        addLog("Applying Bridge settings into Cursor (Base URL + API key + \(model))...", level: .info, source: "CursorBridge", notify: true)
+        runManager("--cursor-apply", extraArgs: ["--model", model]) { [weak self] output in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.cursorApplyBusy = false
+                if let obj = Self.parseJSONObject(output) {
+                    let ok = obj["ok"] as? Bool ?? false
+                    let msg = obj["message"] as? String ?? (ok ? "Applied" : "Apply failed")
+                    self.cursorApplyMessage = msg
+                    self.addLog(msg, level: ok ? .success : .error, source: "CursorBridge", notify: relaunchNotice)
+                } else {
+                    self.cursorApplyMessage = "Apply failed (no response)"
+                    self.addLog("Apply to Cursor failed", level: .error, source: "CursorBridge", detail: output, notify: true)
+                }
+                self.refreshPathHealth()
+            }
+        }
+    }
+
+    func setBridgeAutoHeal(_ enabled: Bool) {
+        let flag = enabled ? "on" : "off"
+        bridgeStatus.autoHeal = enabled
+        runManager("--bridge-set-autoheal", extraArgs: [flag]) { [weak self] output in
+            Task { @MainActor in
+                if let parsed = Self.parseBridgeStatus(output) {
+                    self?.bridgeStatus = parsed
+                }
+                self?.addLog(
+                    enabled ? "Auto-heal Funnel enabled" : "Auto-heal Funnel disabled",
+                    level: .info,
+                    source: "CursorBridge",
+                    notify: true
+                )
+            }
+        }
+    }
+
+    private func maybeRequestBridgeHeal() {
+        let now = Date()
+        if let last = lastBridgeHealAttempt, now.timeIntervalSince(last) < 20 {
+            return
+        }
+        lastBridgeHealAttempt = now
+        bridgeHealing = true
+        runManager("--bridge-heal-now") { [weak self] output in
+            Task { @MainActor in
+                self?.bridgeHealing = false
+                if let parsed = Self.parseBridgeStatus(output) {
+                    self?.bridgeStatus = parsed
+                    if parsed.isReady {
+                        self?.addLog("Auto-heal restored Funnel: \(parsed.baseUrl)", level: .success, source: "CursorBridge", notify: true)
+                    }
+                }
+            }
+        }
+    }
+
+    func enableCursorBridge() {
+        guard !bridgeBusy else { return }
+        bridgeBusy = true
+        addLog("Enabling Cursor Bridge (Tailscale Funnel → 9Router :20128)...", level: .info, source: "CursorBridge", notify: true)
+        runManager("--bridge-start") { [weak self] output in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.runManager("--bridge-status") { statusRaw in
+                    Task { @MainActor in
+                        self.bridgeBusy = false
+                        if let parsed = Self.parseBridgeStatus(statusRaw) {
+                            self.bridgeStatus = parsed
+                            self.previousBridgeReady = parsed.isReady
+                        }
+                        self.loadNineRouterCredentials()
+                        if self.bridgeStatus.isReady {
+                            self.addLog("Cursor Bridge ready: \(self.bridgeStatus.baseUrl)", level: .success, source: "CursorBridge", notify: true)
+                            self.applyCursorConfig()
+                        } else {
+                            let msg = self.bridgeStatus.message.isEmpty ? output : self.bridgeStatus.message
+                            self.addLog("Cursor Bridge not ready yet", level: .warning, source: "CursorBridge", detail: msg, notify: true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Giống Environment Auto Install: cài Tailscale → mở login → chờ Running → bật Funnel.
+    func runBridgeAutoSetup() {
+        guard !bridgeSetupRunning && !bridgeBusy else { return }
+        bridgeSetupRunning = true
+        bridgeBusy = true
+        lastAction = "Auto-setup Cursor Bridge..."
+        addLog("Starting Cursor Bridge auto setup (install Tailscale → login → Funnel)...", level: .info, source: "CursorBridge", notify: true)
+
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.arguments = [managerPath(), "--bridge-setup"]
+        p.environment = Self.standardEnvironment()
+
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+
+        let handle = pipe.fileHandleForReading
+        handle.readabilityHandler = { [weak self] fileHandle in
+            let data = fileHandle.availableData
+            if let str = String(data: data, encoding: .utf8), !str.isEmpty {
+                let lines = str.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                Task { @MainActor in
+                    for line in lines {
+                        let lvl: LogLevel = line.contains("Error") || line.contains("error") || line.contains("FAILED") || line.contains("❌") ? .error :
+                                            (line.contains("Warning") || line.contains("warn") || line.contains("⚠️") ? .warning :
+                                            (line.contains("✅") || line.contains("Success") || line.contains("READY") || line.contains("hoàn tất") ? .success : .info))
+                        self?.addLog(line, level: lvl, source: "CursorBridge")
+                    }
+                }
+            }
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try p.run()
+                p.waitUntilExit()
+                handle.readabilityHandler = nil
+                Task { @MainActor in
+                    self.bridgeSetupRunning = false
+                    self.bridgeBusy = false
+                    self.checkEnvironment()
+                    self.refreshCursorBridge()
+                    if p.terminationStatus == 0 {
+                        self.addLog("Cursor Bridge auto setup completed", level: .success, source: "CursorBridge", notify: true)
+                    } else {
+                        // Incomplete is expected when waiting for password / login / Admin — not a hard crash.
+                        self.addLog(
+                            "Cần thêm 1 bước trên macOS",
+                            level: .warning,
+                            source: "CursorBridge",
+                            detail: self.bridgeStatus.message.isEmpty
+                                ? "Nhập mật khẩu Installer / Log in Tailscale / bật Funnel trong Admin, rồi bấm Continue Setup."
+                                : self.bridgeStatus.message,
+                            notify: true
+                        )
+                    }
+                }
+            } catch {
+                handle.readabilityHandler = nil
+                Task { @MainActor in
+                    self.bridgeSetupRunning = false
+                    self.bridgeBusy = false
+                    self.addLog("Auto setup failed: \(error.localizedDescription)", level: .error, source: "CursorBridge", notify: true)
+                }
+            }
+        }
+    }
+
+    func disableCursorBridge() {
+        guard !bridgeBusy else { return }
+        bridgeBusy = true
+        addLog("Disabling Cursor Bridge Funnel...", level: .warning, source: "CursorBridge", notify: true)
+        runManager("--bridge-stop") { [weak self] _ in
+            Task { @MainActor in
+                self?.bridgeBusy = false
+                self?.previousBridgeReady = false
+                self?.refreshCursorBridge()
+                self?.addLog("Cursor Bridge stopped (auto-heal will not restore until Enable)", level: .info, source: "CursorBridge", notify: true)
+            }
+        }
+    }
+
+    private func loadNineRouterCredentials() {
+        DispatchQueue.global(qos: .utility).async {
+            let db = ("~/.9router/db/data.sqlite" as NSString).expandingTildeInPath
+            let key = self.execShell("sqlite3 \"\(db)\" \"SELECT key FROM apiKeys WHERE isActive=1 ORDER BY createdAt ASC LIMIT 1;\" 2>/dev/null")
+            let combos = self.execShell("sqlite3 \"\(db)\" \"SELECT name FROM combos ORDER BY updatedAt DESC;\" 2>/dev/null")
+            var models = combos
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+
+            // Also pull a few live model ids when router is up
+            let live = self.execShell("curl -fsS --max-time 2 http://127.0.0.1:20128/v1/models 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"\\n\".join([m.get(\"id\",\"\") for m in d.get(\"data\",[])[:30]]))' 2>/dev/null")
+            for id in live.components(separatedBy: .newlines) {
+                let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty && !models.contains(trimmed) {
+                    models.append(trimmed)
+                }
+            }
+            if models.isEmpty { models = ["my-combo"] }
+
+            Task { @MainActor in
+                if !key.isEmpty { self.nineRouterApiKey = key }
+                self.availableModels = models
+                if !models.contains(self.selectedBridgeModel) {
+                    self.selectedBridgeModel = models.contains("my-combo") ? "my-combo" : (models.first ?? "my-combo")
+                }
+            }
+        }
+    }
+
+    private static func parseBridgeStatus(_ raw: String) -> CursorBridgeStatus? {
+        guard let obj = parseJSONObject(raw) else { return nil }
+        return CursorBridgeStatus(
+            installed: obj["installed"] as? Bool ?? false,
+            loggedIn: obj["loggedIn"] as? Bool ?? false,
+            funnelEnabled: obj["funnelEnabled"] as? Bool ?? false,
+            wanted: obj["wanted"] as? Bool ?? false,
+            autoHeal: obj["autoHeal"] as? Bool ?? true,
+            publicUrl: obj["publicUrl"] as? String ?? "",
+            baseUrl: obj["baseUrl"] as? String ?? "",
+            targetPort: obj["targetPort"] as? Int ?? 20128,
+            message: obj["message"] as? String ?? "",
+            lastHealAt: obj["lastHealAt"] as? String ?? "",
+            updatedAt: obj["updatedAt"] as? String ?? ""
+        )
+    }
+
+    private static func parseJSONObject(_ raw: String) -> [String: Any]? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let start = trimmed.firstIndex(of: "{"),
+              let end = trimmed.lastIndex(of: "}"),
+              start <= end else { return nil }
+        let json = String(trimmed[start...end])
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return obj
+    }
+
+    private static func parsePathHealth(_ raw: String) -> PathHealthStatus? {
+        guard let obj = parseJSONObject(raw) else { return nil }
+        var providers: [ProviderHealthItem] = []
+        if let arr = obj["providers"] as? [[String: Any]] {
+            providers = arr.map { item in
+                ProviderHealthItem(
+                    model: item["model"] as? String ?? "",
+                    provider: item["provider"] as? String ?? "",
+                    name: item["name"] as? String ?? "",
+                    active: item["active"] as? Bool ?? false,
+                    testStatus: item["testStatus"] as? String ?? "",
+                    errorCode: item["errorCode"] as? Int,
+                    lastError: item["lastError"] as? String ?? "",
+                    usable: item["usable"] as? Bool ?? false
+                )
+            }
+        }
+        return PathHealthStatus(
+            localRouter: obj["localRouter"] as? Bool ?? false,
+            localApi: obj["localApi"] as? Bool ?? false,
+            localDashboardMs: obj["localDashboardMs"] as? Int ?? 0,
+            localApiMs: obj["localApiMs"] as? Int ?? 0,
+            funnelCli: obj["funnelCli"] as? Bool ?? false,
+            wanted: obj["wanted"] as? Bool ?? false,
+            baseUrl: obj["baseUrl"] as? String ?? "",
+            publicReachable: obj["publicReachable"] as? Bool ?? false,
+            publicStatus: obj["publicStatus"] as? Int ?? 0,
+            publicMs: obj["publicMs"] as? Int ?? 0,
+            publicAuthenticated: obj["publicAuthenticated"] as? Bool ?? false,
+            publicAuthStatus: obj["publicAuthStatus"] as? Int ?? 0,
+            cursorConfigured: obj["cursorConfigured"] as? Bool ?? false,
+            cursorMessage: obj["cursorMessage"] as? String ?? "",
+            cursorBaseUrl: obj["cursorBaseUrl"] as? String ?? "",
+            comboName: obj["comboName"] as? String ?? "my-combo",
+            comboHealthy: obj["comboHealthy"] as? Bool ?? false,
+            usableProviders: obj["usableProviders"] as? Int ?? 0,
+            providerCount: obj["providerCount"] as? Int ?? 0,
+            providers: providers,
+            cursorPathOk: obj["cursorPathOk"] as? Bool ?? false,
+            message: obj["message"] as? String ?? ""
+        )
     }
 
     // MARK: - Dynamic Proxies CRUD
@@ -658,18 +1158,33 @@ final class AppState: ObservableObject {
         quitting = true
         timer?.invalidate()
         timer = nil
+        logTimer?.invalidate()
+        logTimer = nil
+        backend?.terminate()
+        backend = nil
+        addLog("Quit: shutting down Funnel + 9Router + proxies...", level: .warning, source: "System")
         runManagerSync("--shutdown")
         NSApp.terminate(nil)
     }
 
     func prepareForQuit() {
+        guard !quitting else {
+            runManagerSync("--shutdown")
+            return
+        }
         quitting = true
         timer?.invalidate()
         timer = nil
+        logTimer?.invalidate()
+        logTimer = nil
+        backend?.terminate()
+        backend = nil
         runManagerSync("--shutdown")
     }
 
     func finishQuit() {
+        // Belt-and-suspenders: ensure ports/Funnel are down even if terminate raced.
+        runManagerSync("--shutdown")
         backend?.terminate()
         backend = nil
     }
@@ -697,10 +1212,10 @@ final class AppState: ObservableObject {
         Bundle.main.path(forResource: "AI-Stack", ofType: "command") ?? ""
     }
 
-    private func runManager(_ arg: String, completion: @escaping (String) -> Void) {
+    private func runManager(_ arg: String, extraArgs: [String] = [], completion: @escaping (String) -> Void) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        p.arguments = [managerPath(), arg]
+        p.arguments = [managerPath(), arg] + extraArgs
         p.environment = Self.standardEnvironment()
         let pipe = Pipe()
         p.standardOutput = pipe; p.standardError = pipe
@@ -786,6 +1301,29 @@ struct ProxyStore {
 
     func save(_ proxies: [ProxyConfig]) {
         if let d = try? JSONEncoder().encode(proxies) {
+            try? d.write(to: url, options: .atomic)
+        }
+    }
+}
+
+struct CursorBridgeStore {
+    private let url: URL = {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("AI Stack", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("cursor-bridge.json")
+    }()
+
+    func loadSelectedModel(default defaultModel: String) -> String {
+        guard let d = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+              let model = obj["selectedModel"] as? String,
+              !model.isEmpty else { return defaultModel }
+        return model
+    }
+
+    func saveSelectedModel(_ model: String) {
+        let obj: [String: Any] = ["selectedModel": model]
+        if let d = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]) {
             try? d.write(to: url, options: .atomic)
         }
     }
@@ -982,6 +1520,8 @@ struct MainWindow: View {
                 switch state.selectedSection {
                 case .overview:
                     OverviewView()
+                case .cursorBridge:
+                    CursorBridgeView()
                 case .proxies:
                     ProxiesView(showingAdd: $showingAddProxy)
                 case .environment:
@@ -1084,6 +1624,403 @@ struct Sidebar: View {
     }
 }
 
+// MARK: - Tab: Cursor Bridge
+
+struct CursorBridgeView: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                SettingsCard {
+                    HStack(alignment: .center, spacing: 16) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill((state.bridgeStatus.isReady ? Color.green : Color.orange).opacity(0.15))
+                                .frame(width: 50, height: 50)
+                            Image(systemName: state.bridgeStatus.isReady ? "link.circle.fill" : "link.badge.plus")
+                                .font(.system(size: 24, weight: .semibold))
+                                .foregroundStyle(state.bridgeStatus.isReady ? Color.green : Color.orange)
+                        }
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 8) {
+                                Text(
+                                    state.bridgeStatus.isReady
+                                        ? "Cursor Bridge Ready"
+                                        : (state.bridgeStatus.isRecovering || state.bridgeHealing
+                                           ? "Auto-healing Funnel…"
+                                           : "Cursor Bridge Setup")
+                                )
+                                    .font(.system(size: 16, weight: .bold))
+                                Circle()
+                                    .fill(
+                                        state.bridgeStatus.isReady
+                                            ? Color.green
+                                            : (state.bridgeStatus.isRecovering ? Color.orange : Color.orange)
+                                    )
+                                    .frame(width: 8, height: 8)
+                            }
+                            Text(state.bridgeStatus.message)
+                                .font(.system(size: 12))
+                                .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer()
+
+                        HStack(spacing: 8) {
+                            if state.bridgeStatus.isReady {
+                                Button("Disable") { state.disableCursorBridge() }
+                                    .buttonStyle(.bordered)
+                                    .disabled(state.bridgeBusy || state.bridgeSetupRunning)
+                            } else {
+                                Button(state.bridgeSetupRunning ? "Setting up…" : setupButtonTitle) {
+                                    state.runBridgeAutoSetup()
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(state.bridgeBusy || state.bridgeSetupRunning || state.routerStatus != .ready)
+
+                                if state.bridgeStatus.installed && state.bridgeStatus.loggedIn {
+                                    Button("Enable Bridge") { state.enableCursorBridge() }
+                                        .buttonStyle(.bordered)
+                                        .disabled(state.bridgeBusy || state.bridgeSetupRunning || state.routerStatus != .ready)
+                                }
+                            }
+                            Button {
+                                state.refreshCursorBridge()
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(state.bridgeBusy || state.bridgeSetupRunning)
+                        }
+                    }
+                    .padding(16)
+                }
+
+                SettingsCard(header: "Prerequisites") {
+                    VStack(spacing: 0) {
+                        bridgeCheckRow(
+                            title: "9Router Gateway",
+                            ok: state.routerStatus == .ready,
+                            detail: state.routerStatus == .ready ? "Port 20128 online" : "Start services from Overview"
+                        )
+                        Divider().padding(.leading, 46)
+                        bridgeCheckRow(
+                            title: "Tailscale installed",
+                            ok: state.bridgeStatus.installed,
+                            detail: state.bridgeStatus.installed ? "CLI detected" : "Free app required for fixed HTTPS domain"
+                        )
+                        Divider().padding(.leading, 46)
+                        bridgeCheckRow(
+                            title: "Tailscale logged in",
+                            ok: state.bridgeStatus.loggedIn,
+                            detail: state.bridgeStatus.loggedIn ? "Backend Running" : "Open Tailscale and sign in once"
+                        )
+                        Divider().padding(.leading, 46)
+                        bridgeCheckRow(
+                            title: "Funnel CLI",
+                            ok: state.bridgeStatus.funnelEnabled,
+                            detail: state.bridgeStatus.funnelEnabled
+                                ? "Stable *.ts.net URL"
+                                : (state.bridgeStatus.isRecovering ? "Recovering via auto-heal…" : "Press Enable Bridge after login")
+                        )
+                        Divider().padding(.leading, 46)
+                        bridgeCheckRow(
+                            title: "Public HTTPS probe",
+                            ok: state.pathHealth.publicReachable,
+                            detail: state.pathHealth.publicReachable
+                                ? "HTTP \(state.pathHealth.publicStatus) in \(state.pathHealth.publicMs) ms"
+                                : (state.bridgeStatus.wanted ? "Cursor cloud không tới được Funnel" : "Bật Bridge để kiểm tra")
+                        )
+                        Divider().padding(.leading, 46)
+                        bridgeCheckRow(
+                            title: "Cursor configured",
+                            ok: state.pathHealth.cursorConfigured,
+                            detail: state.pathHealth.cursorMessage.isEmpty
+                                ? "Base URL + key + model"
+                                : state.pathHealth.cursorMessage
+                        )
+                        Divider().padding(.leading, 46)
+                        bridgeCheckRow(
+                            title: "Combo providers",
+                            ok: !state.bridgeStatus.wanted || state.pathHealth.comboHealthy || state.pathHealth.providerCount == 0,
+                            detail: state.pathHealth.providerCount == 0
+                                ? "Chưa đọc được combo"
+                                : "\(state.pathHealth.usableProviders)/\(state.pathHealth.providerCount) usable • \(state.pathHealth.comboName)"
+                        )
+                    }
+                }
+
+                SettingsCard(header: "Auto-heal Funnel") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Toggle(
+                            "Tự bật lại Funnel khi bị mất",
+                            isOn: Binding(
+                                get: { state.bridgeStatus.autoHeal },
+                                set: { state.setBridgeAutoHeal($0) }
+                            )
+                        )
+                        .toggleStyle(.switch)
+
+                        Text("Khi bạn đã Enable Bridge, AI-Gate nhớ intent đó. Nếu Tailscale reconnect / Funnel drop / mở lại app, auto-heal sẽ restore Funnel (mỗi ~15s). Disable Bridge = tắt hẳn, không tự bật lại.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        HStack(spacing: 8) {
+                            StatusPill(
+                                text: state.bridgeStatus.wanted ? "Wanted: ON" : "Wanted: OFF",
+                                color: state.bridgeStatus.wanted ? .green : .orange
+                            )
+                            StatusPill(
+                                text: state.bridgeStatus.autoHeal ? "Auto-heal: ON" : "Auto-heal: OFF",
+                                color: state.bridgeStatus.autoHeal ? .green : .orange
+                            )
+                            if state.bridgeHealing || state.bridgeStatus.isRecovering {
+                                StatusPill(text: "Healing…", color: .orange)
+                            }
+                            Spacer()
+                        }
+
+                        if !state.bridgeStatus.lastHealAt.isEmpty {
+                            Text("Last heal: \(state.bridgeStatus.lastHealAt)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                        }
+                    }
+                    .padding(14)
+                }
+
+                if !state.bridgeStatus.installed || !state.bridgeStatus.loggedIn || !state.bridgeStatus.funnelEnabled {
+                    SettingsCard(header: "Guided setup") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Một nút Setup — AI Gate tự mở hộp thoại mật khẩu / Installer. Bạn chỉ cần xác nhận trên macOS (mật khẩu, Log in, Allow VPN). Không cần mở Terminal.")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            VStack(alignment: .leading, spacing: 6) {
+                                setupHintRow(done: state.bridgeStatus.installed, text: "Cài Tailscale (hộp thoại mật khẩu hoặc Installer)")
+                                setupHintRow(done: state.bridgeStatus.loggedIn, text: "Log in Tailscale + Allow VPN")
+                                setupHintRow(done: state.bridgeStatus.funnelEnabled, text: "Bật Funnel (HTTPS công khai)")
+                            }
+
+                            HStack(spacing: 8) {
+                                Button(state.bridgeSetupRunning ? "Setting up…" : setupButtonTitle) {
+                                    state.runBridgeAutoSetup()
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.regular)
+                                .disabled(state.bridgeBusy || state.bridgeSetupRunning || state.routerStatus != .ready)
+
+                                if state.bridgeStatus.installed {
+                                    Button("Open Tailscale") { state.openTailscaleApp() }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.regular)
+                                }
+
+                                if state.bridgeStatus.loggedIn && !state.bridgeStatus.funnelEnabled {
+                                    Button("Open Admin") { state.openTailscaleAdminFunnel() }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.regular)
+                                }
+                            }
+
+                            Text("Nếu lần đầu Funnel lỗi: trang Admin sẽ tự mở — bật HTTPS Certificates + Funnel, rồi bấm Continue Setup.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(14)
+                    }
+                }
+
+                SettingsCard(header: "Apply to Cursor") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text(state.pathHealth.cursorConfigured
+                              ? "Cursor đã khớp Base URL + model. Bấm Apply lại nếu Funnel URL đổi."
+                              : "Một nút — AI Gate ghi Base URL, API key 9Router và model vào Cursor (quit/reopen Cursor tự động).")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if !state.cursorApplyMessage.isEmpty {
+                            Text(state.cursorApplyMessage)
+                                .font(.system(size: 11))
+                                .foregroundStyle(state.pathHealth.cursorConfigured ? Color.green : Color.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        bridgeCopyRow(
+                            title: "Base URL",
+                            value: state.bridgeStatus.baseUrl.isEmpty ? "Enable Bridge để lấy https://….ts.net/v1" : state.bridgeStatus.baseUrl,
+                            canCopy: !state.bridgeStatus.baseUrl.isEmpty
+                        ) {
+                            state.copy(state.bridgeStatus.baseUrl, notice: "Copied Base URL")
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Model")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                            HStack(spacing: 8) {
+                                Picker("", selection: Binding(
+                                    get: { state.selectedBridgeModel },
+                                    set: { state.setBridgeModel($0) }
+                                )) {
+                                    ForEach(state.availableModels.isEmpty ? ["my-combo"] : state.availableModels, id: \.self) { model in
+                                        Text(model).tag(model)
+                                    }
+                                }
+                                .labelsHidden()
+                                .frame(maxWidth: 360)
+                            }
+                        }
+
+                        HStack(spacing: 8) {
+                            Button(state.cursorApplyBusy ? "Applying…" : "Apply to Cursor") {
+                                state.applyCursorConfig()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.regular)
+                            .disabled(!state.bridgeStatus.isReady || state.cursorApplyBusy || state.nineRouterApiKey.isEmpty)
+
+                            Button("Test Cursor path") { state.refreshPathHealth() }
+                                .buttonStyle(.bordered)
+                                .controlSize(.regular)
+
+                            Button("Copy setup text") { state.copyCursorSetup() }
+                                .buttonStyle(.bordered)
+                                .controlSize(.regular)
+                                .disabled(!state.bridgeStatus.isReady)
+
+                            Button("Open 9Router") { state.openDashboard() }
+                                .buttonStyle(.bordered)
+                                .controlSize(.regular)
+                                .disabled(state.routerStatus != .ready)
+                        }
+
+                        Text("Codex dùng localhost — không cần Apply. Cursor bắt buộc qua Funnel public.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.orange)
+                    }
+                    .padding(14)
+                }
+
+                if !state.pathHealth.providers.isEmpty {
+                    SettingsCard(header: "Combo providers (\(state.pathHealth.comboName))") {
+                        VStack(spacing: 0) {
+                            ForEach(Array(state.pathHealth.providers.enumerated()), id: \.element.id) { idx, item in
+                                HStack(spacing: 12) {
+                                    Image(systemName: item.usable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                        .foregroundStyle(item.usable ? Color.green : Color.orange)
+                                        .font(.system(size: 14))
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(item.model)
+                                            .font(.system(size: 12, weight: .semibold))
+                                        Text(item.lastError.isEmpty
+                                              ? "\(item.provider) • \(item.testStatus)"
+                                              : item.lastError)
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                                            .lineLimit(2)
+                                    }
+                                    Spacer()
+                                    StatusPill(
+                                        text: item.usable ? "OK" : (item.errorCode.map { "\($0)" } ?? "Down"),
+                                        color: item.usable ? .green : .orange
+                                    )
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 9)
+                                if idx < state.pathHealth.providers.count - 1 {
+                                    Divider().padding(.leading, 40)
+                                }
+                            }
+                        }
+                    }
+                }
+
+            }
+            .padding(22)
+        }
+        .onAppear { state.refreshCursorBridge() }
+    }
+
+    private var setupButtonTitle: String {
+        if !state.bridgeStatus.installed { return "Setup Tailscale" }
+        if !state.bridgeStatus.loggedIn { return "Continue Setup" }
+        if !state.bridgeStatus.funnelEnabled { return "Continue Setup" }
+        return "Setup"
+    }
+
+    private func setupHintRow(done: Bool, text: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(done ? Color.green : Color(nsColor: .tertiaryLabelColor))
+                .font(.system(size: 13))
+            Text(text)
+                .font(.system(size: 12))
+                .foregroundStyle(done ? Color(nsColor: .secondaryLabelColor) : Color.primary)
+        }
+    }
+
+    private func bridgeCheckRow(title: String, ok: Bool, detail: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: ok ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(ok ? Color.green : Color(nsColor: .tertiaryLabelColor))
+                .font(.system(size: 16))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 13, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+            }
+            Spacer()
+            StatusPill(text: ok ? "OK" : "Need", color: ok ? .green : .orange)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    private func bridgeCopyRow(title: String, value: String, canCopy: Bool, onCopy: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+            HStack(spacing: 8) {
+                Text(value)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+                Spacer()
+                Button("Copy", action: onCopy)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(!canCopy)
+            }
+            .padding(10)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+
+    private func stepRow(_ n: Int, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text("\(n)")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 20, height: 20)
+                .background(Circle().fill(Color(red: 0.18, green: 0.72, blue: 0.55)))
+            Text(text)
+                .font(.system(size: 12))
+                .foregroundStyle(Color(nsColor: .labelColor))
+        }
+    }
+}
+
 // MARK: - Tab 1: Overview
 
 struct OverviewView: View {
@@ -1106,15 +2043,13 @@ struct OverviewView: View {
 
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 8) {
-                                Text(state.overallReady ? "System Operational" : "Attention Required")
+                                Text(state.statusHeadline)
                                     .font(.system(size: 16, weight: .bold))
                                 Circle()
                                     .fill(state.overallReady ? Color.green : Color.orange)
                                     .frame(width: 8, height: 8)
                             }
-                            Text(state.overallReady
-                                 ? "9Router Gateway & \(state.readyProxiesCount)/\(state.proxies.count) Local Proxies online • Ready to handle requests."
-                                 : state.lastAction)
+                            Text(state.statusDetailLine)
                                 .font(.system(size: 12))
                                 .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                         }
@@ -1122,6 +2057,14 @@ struct OverviewView: View {
                         Spacer()
 
                         HStack(spacing: 8) {
+                            Button {
+                                state.selectedSection = .cursorBridge
+                            } label: {
+                                Label("Cursor Bridge", systemImage: "link.circle")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.regular)
+
                             Button {
                                 state.restart()
                             } label: {
@@ -1145,7 +2088,7 @@ struct OverviewView: View {
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.regular)
-                                .help("Stop all services (Pauses auto-recovery)")
+                                .help("Stop all related services (Funnel, 9Router, proxies — no auto-restore)")
                                 .disabled(state.isBusy)
                             } else {
                                 Button {
@@ -1164,6 +2107,64 @@ struct OverviewView: View {
                         }
                     }
                     .padding(16)
+                }
+
+                // Cursor Bridge quick status + path health
+                SettingsCard(header: "Cursor Bridge") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 12) {
+                            SquircleIcon(
+                                symbol: "link.circle.fill",
+                                color: state.pathHealth.cursorPathOk ? .green : Color(red: 0.18, green: 0.72, blue: 0.55),
+                                size: 34,
+                                inner: 16,
+                                radius: 8
+                            )
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(
+                                    state.pathHealth.cursorPathOk
+                                        ? "Cursor path ready"
+                                        : (state.bridgeStatus.isRecovering
+                                           ? "Auto-healing Funnel…"
+                                           : state.pathHealth.message)
+                                )
+                                    .font(.system(size: 13, weight: .bold))
+                                Text(state.bridgeStatus.baseUrl.isEmpty ? state.bridgeStatus.message : state.bridgeStatus.baseUrl)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                                    .lineLimit(2)
+                            }
+                            Spacer()
+                            StatusPill(
+                                text: state.pathHealth.cursorPathOk
+                                    ? "Ready"
+                                    : (state.bridgeStatus.isRecovering ? "Healing" : "Check"),
+                                color: state.pathHealth.cursorPathOk ? .green : .orange
+                            )
+                        }
+
+                        HStack(spacing: 8) {
+                            pathChip("Local", state.pathHealth.localRouter)
+                            pathChip("Funnel", state.pathHealth.publicReachable || (!state.bridgeStatus.wanted && state.bridgeStatus.funnelEnabled))
+                            pathChip("Cursor cfg", state.pathHealth.cursorConfigured)
+                            pathChip("Combo", !state.bridgeStatus.wanted || state.pathHealth.comboHealthy || state.pathHealth.providerCount == 0)
+                            Spacer()
+                            Button("Test") { state.refreshPathHealth() }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            Button(state.bridgeStatus.isReady ? "Apply" : "Open") {
+                                if state.bridgeStatus.isReady {
+                                    state.applyCursorConfig()
+                                } else {
+                                    state.selectedSection = .cursorBridge
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .disabled(state.cursorApplyBusy)
+                        }
+                    }
+                    .padding(14)
                 }
 
                 // 2. Unified Summary Stats
@@ -1291,6 +2292,21 @@ struct OverviewView: View {
             }
             .padding(22)
         }
+    }
+
+    private func pathChip(_ title: String, _ ok: Bool) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(ok ? Color.green : Color.orange)
+                .frame(width: 6, height: 6)
+            Text(title)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.7))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
 
@@ -1570,6 +2586,8 @@ struct ClientGuideSheet: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 14) {
+                Text("Local tools (same Mac)")
+                    .font(.system(size: 12, weight: .semibold))
                 LabeledContent("Base URL:") {
                     HStack {
                         Text("http://127.0.0.1:\(proxy.port)/v1").font(.caption.monospaced())
@@ -1586,11 +2604,27 @@ struct ClientGuideSheet: View {
                             .controlSize(.small)
                     }
                 }
+
+                Divider()
+
+                Text("Cursor IDE")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("Cursor không gọi được localhost. Dùng tab Cursor Bridge (Tailscale Funnel) để lấy Base URL https://….ts.net/v1 + API key 9Router.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Button("Open Cursor Bridge") {
+                    dismiss()
+                    state.selectedSection = .cursorBridge
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
             }
             Spacer()
         }
         .padding(20)
-        .frame(width: 480, height: 260)
+        .frame(width: 520, height: 340)
         .overlay(alignment: .bottom) {
             ToastStackView()
                 .padding(.bottom, 16)
@@ -2037,7 +3071,7 @@ struct MenuBarView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("AI Gate")
                         .font(.system(size: 14, weight: .bold))
-                    Text(state.overallReady ? "System Operational" : "Attention Required")
+                    Text(state.statusHeadline)
                         .font(.system(size: 11))
                         .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                 }
@@ -2140,6 +3174,35 @@ struct MenuBarView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(state.routerStatus != .ready)
+
+                    Divider()
+                        .padding(.leading, 44)
+
+                    Button {
+                        openMainWindow()
+                        state.selectedSection = .cursorBridge
+                    } label: {
+                        HStack(spacing: 10) {
+                            SquircleIcon(symbol: "link.circle.fill", color: Color(red: 0.18, green: 0.72, blue: 0.55), size: 24, inner: 12, radius: 6)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Cursor Bridge")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(Color.primary)
+                                Text(state.bridgeStatus.isReady ? "Ready" : "Setup")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                            }
+                            Spacer()
+                            StatusPill(
+                                text: state.bridgeStatus.isReady ? "On" : "Off",
+                                color: state.bridgeStatus.isReady ? .green : .orange
+                            )
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
 
                     Divider()
                         .padding(.leading, 44)

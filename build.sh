@@ -23,6 +23,8 @@ chmod +x "$RES/AI-Stack.command"
 cp "$ROOT/Assets/AppIcon.icns" "$RES/AppIcon.icns"
 cp "$ROOT/Assets/AppIcon.png" "$RES/AppIcon.png"
 cp "$ROOT/Assets/NavIcon.png" "$RES/NavIcon.png"
+cp "$ROOT/Assets/cursor_apply_config.py" "$RES/cursor_apply_config.py"
+cp "$ROOT/Assets/cursor_path_health.py" "$RES/cursor_path_health.py"
 
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 echo ""

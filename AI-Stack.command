@@ -30,8 +30,49 @@ NINE_REQUIRED="0.5.55"
 
 PROXY_LOG="$LOG_DIR/agentrouter-proxy.log"
 ROUTER_LOG="$LOG_DIR/9router.log"
+BRIDGE_DIR="$APP_DIR/cursor-bridge"
+BRIDGE_STATUS="$BRIDGE_DIR/status.json"
+BRIDGE_DESIRED="$BRIDGE_DIR/desired.json"
+BRIDGE_LOG="$LOG_DIR/cursor-bridge.log"
 
-mkdir -p "$LOG_DIR"
+# Scripts live next to this manager when bundled (Resources/), or under Assets/ in the repo.
+MANAGER_DIR="$(cd "$(dirname "$0")" && pwd)"
+CURSOR_APPLY_PY=""
+CURSOR_HEALTH_PY=""
+if [[ -f "$MANAGER_DIR/cursor_apply_config.py" ]]; then
+  CURSOR_APPLY_PY="$MANAGER_DIR/cursor_apply_config.py"
+elif [[ -f "$MANAGER_DIR/Assets/cursor_apply_config.py" ]]; then
+  CURSOR_APPLY_PY="$MANAGER_DIR/Assets/cursor_apply_config.py"
+elif [[ -f "$MANAGER_DIR/../Assets/cursor_apply_config.py" ]]; then
+  CURSOR_APPLY_PY="$(cd "$MANAGER_DIR/.." && pwd)/Assets/cursor_apply_config.py"
+fi
+if [[ -f "$MANAGER_DIR/cursor_path_health.py" ]]; then
+  CURSOR_HEALTH_PY="$MANAGER_DIR/cursor_path_health.py"
+elif [[ -f "$MANAGER_DIR/Assets/cursor_path_health.py" ]]; then
+  CURSOR_HEALTH_PY="$MANAGER_DIR/Assets/cursor_path_health.py"
+elif [[ -f "$MANAGER_DIR/../Assets/cursor_path_health.py" ]]; then
+  CURSOR_HEALTH_PY="$(cd "$MANAGER_DIR/.." && pwd)/Assets/cursor_path_health.py"
+fi
+
+mkdir -p "$LOG_DIR" "$BRIDGE_DIR"
+
+cursor_apply_config() {
+    local model="${1:-my-combo}"
+    if [[ -z "$CURSOR_APPLY_PY" || ! -f "$CURSOR_APPLY_PY" ]]; then
+        print '{"ok":false,"message":"Thiếu cursor_apply_config.py trong Resources"}'
+        return 1
+    fi
+    /usr/bin/python3 "$CURSOR_APPLY_PY" --model "$model" 2>>"$BRIDGE_LOG"
+}
+
+cursor_path_health() {
+    local model="${1:-my-combo}"
+    if [[ -z "$CURSOR_HEALTH_PY" || ! -f "$CURSOR_HEALTH_PY" ]]; then
+        print '{"localRouter":false,"message":"Thiếu cursor_path_health.py","cursorPathOk":false}'
+        return 1
+    fi
+    /usr/bin/python3 "$CURSOR_HEALTH_PY" --model "$model" 2>/dev/null
+}
 
 # ---------- terminal UI ----------
 R=$'\e[0m'; B=$'\e[1m'; DIM=$'\e[2m'
@@ -266,7 +307,169 @@ bootstrap() {
         ok "AgentRouter Proxy built"
     fi
 
+    # Tailscale (Cursor Bridge) — install only; login is interactive.
+    install_tailscale_if_needed || true
+
     return 0
+}
+
+install_tailscale_if_needed() {
+    if find_tailscale >/dev/null 2>&1 || [[ -d "/Applications/Tailscale.app" ]]; then
+        ok "Tailscale already installed"
+        return 0
+    fi
+
+    info "Đang chuẩn bị cài Tailscale app (không cần mở Terminal)..."
+    write_bridge_status false false false "" "Đang tải/cài Tailscale… sẽ hiện hộp thoại mật khẩu macOS."
+
+    local brew_bin=""
+    if [[ -x /opt/homebrew/bin/brew ]]; then
+        brew_bin="/opt/homebrew/bin/brew"
+    elif [[ -x /usr/local/bin/brew ]]; then
+        brew_bin="/usr/local/bin/brew"
+    elif cmd brew; then
+        brew_bin="$(command -v brew)"
+    fi
+
+    # 1) Preferred UX: macOS password dialog via osascript (no Terminal).
+    if [[ -n "$brew_bin" ]]; then
+        info "Hiện hộp thoại mật khẩu macOS để cài Tailscale…"
+        if osascript <<EOF >/dev/null 2>>"$BRIDGE_LOG"
+do shell script "$brew_bin install --cask tailscale-app" with administrator privileges
+EOF
+        then
+            ok "brew install (GUI password) OK"
+        else
+            warn "Cài bằng hộp thoại mật khẩu chưa thành công — chuyển sang mở Installer .pkg"
+            {
+                print "---- $(date) osascript brew install failed ----"
+            } >>"$BRIDGE_LOG" 2>&1
+        fi
+    fi
+
+    if find_tailscale >/dev/null 2>&1 || [[ -d "/Applications/Tailscale.app" ]]; then
+        ok "Tailscale installed"
+        open -a Tailscale >/dev/null 2>&1 || true
+        return 0
+    fi
+
+    # 2) Fallback UX: fetch .pkg and open native Installer.app
+    local pkg=""
+    if [[ -n "$brew_bin" ]]; then
+        info "Đang tải Tailscale.pkg…"
+        "$brew_bin" fetch --cask tailscale-app >>"$BRIDGE_LOG" 2>&1 || true
+        pkg="$("$brew_bin" --cache -s tailscale-app 2>/dev/null | tail -n 1)"
+        if [[ -z "$pkg" || ! -f "$pkg" ]]; then
+            pkg="$(find "$("$brew_bin" --cache 2>/dev/null)" -name 'Tailscale-*-macos.pkg' 2>/dev/null | tail -n 1)"
+        fi
+        if [[ -z "$pkg" || ! -f "$pkg" ]]; then
+            pkg="$(find "$("$brew_bin" --cache 2>/dev/null)" -iname '*tailscale*.pkg' 2>/dev/null | tail -n 1)"
+        fi
+    fi
+
+    if [[ -n "$pkg" && -f "$pkg" ]]; then
+        info "Mở Installer macOS — nhập mật khẩu trong cửa sổ cài đặt…"
+        write_bridge_status false false false "" "Đã mở Installer Tailscale. Nhập mật khẩu Mac → Install, rồi chờ AI Gate nhận app."
+        open "$pkg" >/dev/null 2>&1 || true
+    else
+        warn "Không lấy được .pkg — mở trang tải chính thức."
+        write_bridge_status false false false "" "Mở trang tải Tailscale. Cài xong rồi quay lại Continue Setup."
+        open "https://tailscale.com/download/mac" >/dev/null 2>&1 || true
+    fi
+
+    # 3) Wait for user to finish GUI install (up to ~3 minutes)
+    info "Chờ Tailscale xuất hiện trong /Applications (tối đa 180s)…"
+    local i=0
+    while (( i < 180 )); do
+        if find_tailscale >/dev/null 2>&1 || [[ -d "/Applications/Tailscale.app" ]]; then
+            ok "Tailscale installed"
+            open -a Tailscale >/dev/null 2>&1 || true
+            return 0
+        fi
+        if (( i > 0 && i % 30 == 0 )); then
+            info "Vẫn chờ cài đặt… (${i}s) — hoàn tất Installer nếu đang mở."
+            write_bridge_status false false false "" "Đang chờ bạn hoàn tất Installer Tailscale… (${i}s)"
+            if [[ -n "$pkg" && -f "$pkg" ]]; then
+                open "$pkg" >/dev/null 2>&1 || true
+            fi
+        fi
+        sleep 1
+        (( i++ ))
+    done
+
+    fail "Chưa thấy Tailscale sau khi mở Installer. Cài xong trong Applications rồi bấm Continue Setup."
+    write_bridge_status false false false "" "Chưa cài xong Tailscale. Hoàn tất Installer rồi bấm Continue Setup."
+    return 1
+}
+
+# Guided setup for Cursor Bridge: install → open login → wait → enable Funnel.
+bridge_setup() {
+    section "CURSOR BRIDGE AUTO SETUP"
+
+    info "Bước 1/4 — Cài Tailscale (GUI, không cần Terminal)"
+    if ! install_tailscale_if_needed; then
+        return 1
+    fi
+
+    local ts=""
+    if ! ts="$(find_tailscale)"; then
+        if [[ -x "/Applications/Tailscale.app/Contents/MacOS/Tailscale" ]]; then
+            ts="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+        else
+            write_bridge_status false false false "" "Đã có app nhưng chưa thấy CLI. Mở Tailscale một lần rồi Continue Setup."
+            open -a Tailscale >/dev/null 2>&1 || true
+            fail "Không tìm thấy Tailscale CLI."
+            return 1
+        fi
+    fi
+
+    info "Bước 2/4 — Mở Tailscale để đăng nhập"
+    open -a Tailscale >/dev/null 2>&1 || true
+    osascript -e 'tell application "Tailscale" to activate' >/dev/null 2>&1 || true
+
+    info "Bước 3/4 — Chờ Tailscale Running (tối đa 120s). Hãy Log in trong cửa sổ Tailscale…"
+    local i=0
+    local backend_state=""
+    while (( i < 120 )); do
+        backend_state="$("$ts" status --json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print((d.get("BackendState") or ""))' 2>/dev/null || true)"
+        if [[ "$backend_state" == "Running" ]]; then
+            ok "Tailscale Running"
+            break
+        fi
+        if (( i % 20 == 0 )); then
+            info "Đang chờ login… state=${backend_state:-unknown} (${i}s)"
+            write_bridge_status true false false "" "Hãy Log in trong app Tailscale (và Allow VPN nếu được hỏi). Đang chờ… (${i}s)"
+            open -a Tailscale >/dev/null 2>&1 || true
+            osascript -e 'tell application "Tailscale" to activate' >/dev/null 2>&1 || true
+        fi
+        sleep 1
+        (( i++ ))
+    done
+
+    if [[ "$backend_state" != "Running" ]]; then
+        write_bridge_status true false false "" "Chưa login xong. Log in trong Tailscale, rồi bấm Continue Setup."
+        fail "Chưa login Tailscale."
+        open -a Tailscale >/dev/null 2>&1 || true
+        return 1
+    fi
+
+    info "Bước 4/4 — Bật Funnel → 9Router :$ROUTER_PORT"
+    if ! router_healthy_quiet; then
+        start_router_quiet >/dev/null 2>&1 || true
+    fi
+
+    if start_bridge; then
+        ok "Cursor Bridge AUTO SETUP hoàn tất"
+        return 0
+    fi
+
+    warn "Funnel chưa bật — mở Admin để Enable HTTPS + Funnel (1 lần)."
+    open "https://login.tailscale.com/admin/dns" >/dev/null 2>&1 || true
+    sleep 1
+    open "https://login.tailscale.com/admin/acls" >/dev/null 2>&1 || true
+    write_bridge_status true true false "" "Đã login. Trong trang Admin vừa mở: bật HTTPS Certificates + Funnel, rồi bấm Continue Setup."
+    fail "Funnel chưa active — hoàn tất Admin rồi Continue Setup."
+    return 1
 }
 
 # ============================================================
@@ -527,6 +730,406 @@ diagnostics() {
 }
 
 # ============================================================
+# CURSOR BRIDGE (Tailscale Funnel → 9Router)
+# ============================================================
+# Expose local 9Router as a stable public HTTPS URL for Cursor.
+# URL shape: https://<machine>.<tailnet>.ts.net/v1 (free, fixed).
+
+find_tailscale() {
+    local candidates=(
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+        "/opt/homebrew/bin/tailscale"
+        "/usr/local/bin/tailscale"
+    )
+    local c
+    if cmd tailscale; then
+        candidates=("$(command -v tailscale)" "${candidates[@]}")
+    fi
+    for c in "${candidates[@]}"; do
+        [[ -n "$c" && -x "$c" ]] && { print -- "$c"; return 0; }
+    done
+    return 1
+}
+
+json_escape() {
+    local s="${1:-}"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/}"
+    print -rn -- "$s"
+}
+
+write_bridge_status() {
+    local installed="${1:-false}"
+    local logged_in="${2:-false}"
+    local funnel_on="${3:-false}"
+    local public_url="${4:-}"
+    local message="${5:-}"
+    local base_url=""
+    if [[ -n "$public_url" ]]; then
+        base_url="${public_url%/}/v1"
+    fi
+    local wanted auto_heal last_heal
+    wanted="$(bridge_desired_get wanted false)"
+    auto_heal="$(bridge_desired_get autoHeal true)"
+    last_heal="$(bridge_desired_get lastHealAt "")"
+    local now
+    now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    cat >"$BRIDGE_STATUS" <<EOF
+{
+  "installed": ${installed},
+  "loggedIn": ${logged_in},
+  "funnelEnabled": ${funnel_on},
+  "wanted": ${wanted},
+  "autoHeal": ${auto_heal},
+  "publicUrl": "$(json_escape "$public_url")",
+  "baseUrl": "$(json_escape "$base_url")",
+  "targetPort": ${ROUTER_PORT},
+  "message": "$(json_escape "$message")",
+  "lastHealAt": "$(json_escape "$last_heal")",
+  "updatedAt": "${now}"
+}
+EOF
+}
+
+bridge_desired_get() {
+    local key="${1:-wanted}"
+    # Use ${2-...} (not :-) so an explicit empty default stays empty.
+    local default="${2-false}"
+    if [[ ! -f "$BRIDGE_DESIRED" ]]; then
+        print -- "$default"
+        return 0
+    fi
+    BRIDGE_DESIRED_PATH="$BRIDGE_DESIRED" BRIDGE_DESIRED_KEY="$key" BRIDGE_DESIRED_DEFAULT="$default" python3 - <<'PY' 2>/dev/null || print -- "$default"
+import json, os
+path = os.environ["BRIDGE_DESIRED_PATH"]
+key = os.environ["BRIDGE_DESIRED_KEY"]
+default = os.environ.get("BRIDGE_DESIRED_DEFAULT", "false")
+try:
+    with open(path) as f:
+        data = json.load(f)
+except Exception:
+    print(default)
+    raise SystemExit(0)
+val = data.get(key, None)
+if val is None:
+    print(default)
+elif isinstance(val, bool):
+    print("true" if val else "false")
+else:
+    print(val)
+PY
+}
+
+bridge_desired_set() {
+    local wanted="${1:-}"
+    local auto_heal="${2:-}"
+    local last_heal="${3:-}"
+    mkdir -p "$BRIDGE_DIR"
+    BRIDGE_DESIRED_PATH="$BRIDGE_DESIRED" \
+    BRIDGE_SET_WANTED="$wanted" \
+    BRIDGE_SET_AUTOHEAL="$auto_heal" \
+    BRIDGE_SET_LASTHEAL="$last_heal" \
+    python3 - <<'PY' 2>/dev/null || true
+import json, os
+from datetime import datetime, timezone
+path = os.environ["BRIDGE_DESIRED_PATH"]
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            data = json.load(f) or {}
+    except Exception:
+        data = {}
+wanted = os.environ.get("BRIDGE_SET_WANTED", "")
+autoheal = os.environ.get("BRIDGE_SET_AUTOHEAL", "")
+lastheal = os.environ.get("BRIDGE_SET_LASTHEAL", "")
+if wanted in ("true", "false"):
+    data["wanted"] = wanted == "true"
+if autoheal in ("true", "false"):
+    data["autoHeal"] = autoheal == "true"
+if lastheal == "now":
+    data["lastHealAt"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+elif lastheal:
+    data["lastHealAt"] = lastheal
+data.setdefault("wanted", False)
+data.setdefault("autoHeal", True)
+data.setdefault("lastHealAt", "")
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+}
+
+# Parse Funnel public host from `tailscale funnel status --json` or DNSName.
+bridge_detect_public_url() {
+    local ts="$1"
+    local json host
+
+    json="$("$ts" funnel status --json 2>/dev/null || true)"
+    if [[ -n "$json" ]]; then
+        host="$(BRIDGE_JSON="$json" python3 - <<'PY' 2>/dev/null
+import os, json
+raw = os.environ.get("BRIDGE_JSON", "").strip()
+if not raw:
+    raise SystemExit(0)
+try:
+    data = json.loads(raw)
+except Exception:
+    raise SystemExit(0)
+
+allow = data.get("AllowFunnel") or {}
+for key, enabled in allow.items():
+    if enabled:
+        host = str(key).split(":")[0]
+        if host:
+            print(f"https://{host}")
+            raise SystemExit(0)
+
+web = data.get("Web") or {}
+for key in web:
+    host = str(key).split(":")[0]
+    if host:
+        print(f"https://{host}")
+        raise SystemExit(0)
+PY
+)"
+        if [[ -n "$host" ]]; then
+            print -- "$host"
+            return 0
+        fi
+    fi
+
+    json="$("$ts" status --json 2>/dev/null || true)"
+    if [[ -n "$json" ]]; then
+        host="$(BRIDGE_JSON="$json" python3 - <<'PY' 2>/dev/null
+import os, json
+raw = os.environ.get("BRIDGE_JSON", "").strip()
+if not raw:
+    raise SystemExit(0)
+try:
+    data = json.loads(raw)
+except Exception:
+    raise SystemExit(0)
+dns = ((data.get("Self") or {}).get("DNSName") or "").rstrip(".")
+if dns:
+    print(f"https://{dns}")
+PY
+)"
+        if [[ -n "$host" ]]; then
+            print -- "$host"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+bridge_refresh_status() {
+    local ts=""
+    if ! ts="$(find_tailscale)"; then
+        write_bridge_status false false false "" "Chưa cài Tailscale. Cài app Tailscale (free) rồi đăng nhập."
+        return 1
+    fi
+
+    local backend_state
+    backend_state="$("$ts" status --json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print((d.get("BackendState") or ""))' 2>/dev/null || true)"
+    if [[ -z "$backend_state" || "$backend_state" == "NoState" || "$backend_state" == "NeedsLogin" ]]; then
+        write_bridge_status true false false "" "Tailscale chưa đăng nhập. Mở app Tailscale → Log in."
+        return 1
+    fi
+
+    local public_url=""
+    public_url="$(bridge_detect_public_url "$ts" || true)"
+
+    local funnel_on=false
+    if [[ -n "$public_url" ]]; then
+        local st
+        st="$("$ts" funnel status 2>/dev/null || true)"
+        if print -- "$st" | grep -qiE 'Funnel on|https://|AllowFunnel|Proxy'; then
+            # Confirm handler points at our router port when possible
+            if print -- "$st" | grep -q "$ROUTER_PORT" || [[ -n "$public_url" ]]; then
+                funnel_on=true
+            fi
+        fi
+        # Also treat non-empty AllowFunnel from JSON as on
+        if "$ts" funnel status --json 2>/dev/null | grep -q '"AllowFunnel"'; then
+            if "$ts" funnel status --json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); raise SystemExit(0 if d.get("AllowFunnel") else 1)' 2>/dev/null; then
+                funnel_on=true
+            fi
+        fi
+    fi
+
+    if [[ "$funnel_on" == true && -n "$public_url" ]]; then
+        local heal_note=""
+        if [[ "$(bridge_desired_get autoHeal true)" == "true" && "$(bridge_desired_get wanted false)" == "true" ]]; then
+            heal_note=" Auto-heal Funnel: ON."
+        fi
+        write_bridge_status true true true "$public_url" "Cursor Bridge sẵn sàng. Dán Base URL + API Key vào Cursor.${heal_note}"
+        return 0
+    fi
+
+    if [[ "$(bridge_desired_get wanted false)" == "true" ]]; then
+        write_bridge_status true true false "${public_url}" "Funnel đang tắt nhưng vẫn muốn bật — auto-heal sẽ thử khôi phục."
+    else
+        write_bridge_status true true false "${public_url}" "Tailscale đã login. Bấm Enable Bridge để bật Funnel (HTTPS cố định)."
+    fi
+    return 1
+}
+
+start_bridge_quiet() {
+    # Silent Funnel enable used by auto-heal. Does not change desired.wanted.
+    if ! router_healthy_quiet; then
+        start_router_quiet >/dev/null 2>&1 || true
+    fi
+    if ! router_healthy_quiet; then
+        return 1
+    fi
+
+    local ts=""
+    if ! ts="$(find_tailscale)"; then
+        return 1
+    fi
+
+    local backend_state
+    backend_state="$("$ts" status --json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print((d.get("BackendState") or ""))' 2>/dev/null || true)"
+    if [[ "$backend_state" != "Running" ]]; then
+        return 1
+    fi
+
+    {
+        print "---- $(date) start_bridge_quiet (auto-heal) ----"
+        "$ts" funnel --bg "$ROUTER_PORT" 2>&1 || true
+        "$ts" funnel --bg "http://127.0.0.1:$ROUTER_PORT" 2>&1 || true
+    } >>"$BRIDGE_LOG" 2>&1
+
+    sleep 1
+    if bridge_refresh_status >/dev/null 2>&1; then
+        bridge_desired_set "" "" "now"
+        bridge_refresh_status >/dev/null 2>&1 || true
+        return 0
+    fi
+    return 1
+}
+
+start_bridge() {
+    section "CURSOR BRIDGE (Tailscale Funnel)"
+
+    if ! router_healthy_quiet; then
+        warn "9Router chưa READY — thử start router trước."
+        start_router_quiet >/dev/null 2>&1 || true
+    fi
+    if ! router_healthy_quiet; then
+        write_bridge_status true false false "" "Không thể bật Bridge vì 9Router (:$ROUTER_PORT) chưa READY."
+        fail "9Router chưa READY."
+        return 1
+    fi
+
+    local ts=""
+    if ! ts="$(find_tailscale)"; then
+        write_bridge_status false false false "" "Chưa cài Tailscale. Cài: brew install --cask tailscale"
+        fail "Tailscale chưa được cài."
+        return 1
+    fi
+
+    local backend_state
+    backend_state="$("$ts" status --json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print((d.get("BackendState") or ""))' 2>/dev/null || true)"
+    if [[ "$backend_state" != "Running" ]]; then
+        write_bridge_status true false false "" "Tailscale chưa Running (state=${backend_state:-unknown}). Mở app Tailscale và đăng nhập."
+        fail "Tailscale chưa đăng nhập / chưa Running."
+        return 1
+    fi
+
+    info "Enabling Tailscale Funnel → 127.0.0.1:$ROUTER_PORT"
+    {
+        print "---- $(date) start_bridge ----"
+        "$ts" funnel --bg "$ROUTER_PORT" 2>&1 || true
+        # Some builds prefer explicit proxy URL
+        "$ts" funnel --bg "http://127.0.0.1:$ROUTER_PORT" 2>&1 || true
+    } >>"$BRIDGE_LOG" 2>&1
+
+    sleep 1
+    if bridge_refresh_status; then
+        # Remember user intent so auto-heal can restore after drops / relaunch.
+        bridge_desired_set "true" "" "now"
+        bridge_refresh_status >/dev/null 2>&1 || true
+        ok "Cursor Bridge READY"
+        local base
+        base="$(python3 -c "import json; print(json.load(open('$BRIDGE_STATUS')).get('baseUrl',''))" 2>/dev/null || true)"
+        [[ -n "$base" ]] && ok "Base URL: $base"
+        # Best-effort: inject Base URL + key + model into Cursor (does not fail Bridge).
+        {
+            print "---- $(date) auto cursor_apply after start_bridge ----"
+            cursor_apply_config "my-combo" || true
+        } >>"$BRIDGE_LOG" 2>&1
+        return 0
+    fi
+
+    # Funnel may need admin enable once: https://login.tailscale.com/admin/acls
+    write_bridge_status true true false "" "Funnel chưa bật. Kiểm tra Tailscale Admin → Enable HTTPS + Funnel, rồi thử lại."
+    fail "Funnel chưa active. Xem $BRIDGE_LOG và bật Funnel trong Tailscale Admin."
+    return 1
+}
+
+# Clear Funnel runtime but keep desired.wanted (used on app quit/stop services).
+stop_bridge_runtime() {
+    local ts=""
+    if ts="$(find_tailscale)"; then
+        {
+            print "---- $(date) stop_bridge_runtime ----"
+            "$ts" serve reset 2>&1 || true
+            "$ts" funnel reset 2>&1 || true
+        } >>"$BRIDGE_LOG" 2>&1
+    fi
+    bridge_refresh_status >/dev/null 2>&1 || true
+}
+
+# User Disable: clear Funnel + mark wanted=false so auto-heal will not restore.
+stop_bridge() {
+    section "STOP CURSOR BRIDGE"
+    bridge_desired_set "false" "" ""
+    local ts=""
+    if ts="$(find_tailscale)"; then
+        "$ts" serve reset >>"$BRIDGE_LOG" 2>&1 || true
+        "$ts" funnel reset >>"$BRIDGE_LOG" 2>&1 || true
+        ok "Đã tắt Tailscale Funnel/Serve config."
+    else
+        warn "Không tìm thấy Tailscale CLI — bỏ qua reset Funnel."
+    fi
+    bridge_refresh_status >/dev/null 2>&1 || true
+}
+
+bridge_healthy_quiet() {
+    bridge_refresh_status >/dev/null 2>&1
+}
+
+bridge_autoheal_tick() {
+    # Only restore Funnel when user previously Enabled Bridge and autoHeal is on.
+    [[ "$(bridge_desired_get wanted false)" == "true" ]] || return 0
+    [[ "$(bridge_desired_get autoHeal true)" == "true" ]] || return 0
+
+    if bridge_healthy_quiet; then
+        return 0
+    fi
+
+    {
+        print "---- $(date) bridge_autoheal_tick: Funnel down, attempting restore ----"
+    } >>"$BRIDGE_LOG" 2>&1
+
+    if start_bridge_quiet; then
+        {
+            print "---- $(date) bridge_autoheal_tick: restore OK ----"
+        } >>"$BRIDGE_LOG" 2>&1
+        return 0
+    fi
+
+    {
+        print "---- $(date) bridge_autoheal_tick: restore failed ----"
+    } >>"$BRIDGE_LOG" 2>&1
+    return 1
+}
+
+# ============================================================
 # AUTO-HEALING
 # ============================================================
 
@@ -569,6 +1172,7 @@ start_router_quiet() {
 autoheal_loop() {
     # Auto-healing only restarts a service when its own health endpoint
     # is down AND its expected port is free. It never kills foreign apps.
+    # Funnel restore only runs when desired.wanted=true and autoHeal=true.
     while true; do
         if ! proxy_healthy_quiet; then
             start_proxy_quiet >/dev/null 2>&1 || true
@@ -577,6 +1181,8 @@ autoheal_loop() {
         if ! router_healthy_quiet; then
             start_router_quiet >/dev/null 2>&1 || true
         fi
+
+        bridge_autoheal_tick >/dev/null 2>&1 || true
 
         sleep "$AUTOHEAL_INTERVAL"
     done
@@ -665,6 +1271,8 @@ stop_all() {
     section "STOP ALL"
 
     stop_autoheal
+    # Temporary Funnel stop — keep wanted so Enable intent survives relaunch.
+    stop_bridge_runtime >/dev/null 2>&1 || true
     pkill -9 -f "agentrouter-proxy" 2>/dev/null || true
     pkill -9 -f "9router" 2>/dev/null || true
     stop_port_force "$PROXY_PORT" "AgentRouter Proxy"
@@ -685,6 +1293,7 @@ restart_all() {
     start_proxy
     start_router
     start_autoheal
+    bridge_autoheal_tick >/dev/null 2>&1 || true
 }
 
 # ============================================================
@@ -791,15 +1400,99 @@ fi
 # ============================================================
 if [[ "${1:-}" == "--shutdown" ]]; then
     stop_autoheal 2>/dev/null || true
-    local current_pid=$$
+    # Full teardown: Funnel + clear wanted so nothing auto-restores after Quit/Stop.
+    stop_bridge >/dev/null 2>&1 || true
+    current_pid=$$
     pgrep -f "AI-Stack.command.*--background" | grep -v "^${current_pid}$" | xargs kill -9 2>/dev/null || true
     pgrep -f "AI-Stack.command.*--restart" | grep -v "^${current_pid}$" | xargs kill -9 2>/dev/null || true
     pkill -9 -f "autoheal_loop" 2>/dev/null || true
     pkill -9 -f "agentrouter-proxy" 2>/dev/null || true
     pkill -9 -f "9router" 2>/dev/null || true
+    # 9Router may leave a next-server child on :20128
+    pkill -9 -f "next-server" 2>/dev/null || true
     stop_port_force "$PROXY_PORT" "AgentRouter Proxy" >/dev/null 2>&1 || true
     stop_port_force "$ROUTER_PORT" "9Router" >/dev/null 2>&1 || true
+    # Final Funnel/Serve sweep in case Tailscale raced.
+    if ts="$(find_tailscale 2>/dev/null)"; then
+        "$ts" serve reset >/dev/null 2>&1 || true
+        "$ts" funnel reset >/dev/null 2>&1 || true
+    fi
     exit 0
+fi
+
+# ============================================================
+# CURSOR BRIDGE MODES (used by the native app)
+# ============================================================
+if [[ "${1:-}" == "--bridge-status" ]]; then
+    bridge_refresh_status >/dev/null 2>&1 || true
+    if [[ -f "$BRIDGE_STATUS" ]]; then
+        cat "$BRIDGE_STATUS"
+    else
+        print '{"installed":false,"loggedIn":false,"funnelEnabled":false,"wanted":false,"autoHeal":true,"publicUrl":"","baseUrl":"","targetPort":20128,"message":"No status","lastHealAt":"","updatedAt":""}'
+    fi
+    exit 0
+fi
+
+if [[ "${1:-}" == "--bridge-start" ]]; then
+    start_bridge
+    exit $?
+fi
+
+if [[ "${1:-}" == "--bridge-setup" ]]; then
+    bridge_setup
+    exit $?
+fi
+
+if [[ "${1:-}" == "--bridge-stop" ]]; then
+    stop_bridge
+    exit 0
+fi
+
+if [[ "${1:-}" == "--bridge-set-autoheal" ]]; then
+    mode="${2:-on}"
+    if [[ "$mode" == "off" || "$mode" == "false" || "$mode" == "0" ]]; then
+        bridge_desired_set "" "false" ""
+    else
+        bridge_desired_set "" "true" ""
+    fi
+    bridge_refresh_status >/dev/null 2>&1 || true
+    if [[ -f "$BRIDGE_STATUS" ]]; then
+        cat "$BRIDGE_STATUS"
+    fi
+    exit 0
+fi
+
+if [[ "${1:-}" == "--bridge-heal-now" ]]; then
+    bridge_autoheal_tick
+    bridge_refresh_status >/dev/null 2>&1 || true
+    if [[ -f "$BRIDGE_STATUS" ]]; then
+        cat "$BRIDGE_STATUS"
+    fi
+    exit $?
+fi
+
+if [[ "${1:-}" == "--cursor-apply" ]]; then
+    model="my-combo"
+    if [[ "${2:-}" == "--model" && -n "${3:-}" ]]; then
+        model="$3"
+    elif [[ -n "${2:-}" && "${2:-}" != --* ]]; then
+        model="$2"
+    fi
+    bridge_refresh_status >/dev/null 2>&1 || true
+    cursor_apply_config "$model"
+    exit $?
+fi
+
+if [[ "${1:-}" == "--bridge-health" ]]; then
+    model="my-combo"
+    if [[ "${2:-}" == "--model" && -n "${3:-}" ]]; then
+        model="$3"
+    elif [[ -n "${2:-}" && "${2:-}" != --* ]]; then
+        model="$2"
+    fi
+    bridge_refresh_status >/dev/null 2>&1 || true
+    cursor_path_health "$model"
+    exit $?
 fi
 
 # ============================================================
@@ -818,6 +1511,8 @@ if [[ "${1:-}" == "--background" ]]; then
     cleanup_background() {
         trap - EXIT
         stop_autoheal
+        # Background died (Quit/Stop already ran --shutdown). Sweep Funnel + ports.
+        stop_bridge_runtime >/dev/null 2>&1 || true
         stop_port_force "$PROXY_PORT" "AgentRouter Proxy" >/dev/null 2>&1 || true
         stop_port_force "$ROUTER_PORT" "9Router" >/dev/null 2>&1 || true
         exit 0
@@ -828,6 +1523,9 @@ if [[ "${1:-}" == "--background" ]]; then
     start_proxy >/dev/null 2>&1 || true
     start_router >/dev/null 2>&1 || true
     start_autoheal >/dev/null 2>&1 || true
+    # If user previously Enabled Bridge, restore Funnel on launch.
+    bridge_autoheal_tick >/dev/null 2>&1 || true
+    bridge_refresh_status >/dev/null 2>&1 || true
 
     while true; do
         sleep 3600
@@ -843,6 +1541,9 @@ cleanup_on_exit() {
     local code=$?
     trap - EXIT
     stop_autoheal
+    stop_bridge_runtime >/dev/null 2>&1 || true
+    pkill -9 -f "agentrouter-proxy" 2>/dev/null || true
+    pkill -9 -f "9router" 2>/dev/null || true
     stop_port_force "$PROXY_PORT" "AgentRouter Proxy" >/dev/null 2>&1 || true
     stop_port_force "$ROUTER_PORT" "9Router" >/dev/null 2>&1 || true
     exit "$code"
