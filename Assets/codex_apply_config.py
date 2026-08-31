@@ -57,8 +57,11 @@ def apply_model(model: str) -> int:
         new_text = f'model = "{model}"\n' + text
 
     try:
-        backup = path.with_suffix(path.suffix + ".bak-aigate")
-        backup.write_text(text, encoding="utf-8")
+        legacy = path.with_suffix(path.suffix + ".bak-aigate")
+        try:
+            legacy.unlink(missing_ok=True)
+        except OSError:
+            pass
         path.write_text(new_text, encoding="utf-8")
     except Exception as e:
         return out(False, message=f"Ghi config.toml lỗi: {e}", model=model)

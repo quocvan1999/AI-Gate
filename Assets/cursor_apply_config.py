@@ -5,13 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import shutil
 import sqlite3
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -392,9 +389,8 @@ def apply(base_url: str, model: str, api_key: str, relaunch: bool) -> int:
         )
 
     time.sleep(2.0)  # let Cursor flush state.vscdb after quit
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup = db_path.with_name(f"state.vscdb.aigate-bak-{ts}")
-    # Prune old AI Gate backups — full copy of bloated state.vscdb can be multi-GB each.
+
+    # Remove legacy full-DB backups (multi-GB copies from older AI Gate builds).
     try:
         for old in db_path.parent.glob("state.vscdb.aigate-bak-*"):
             try:
@@ -408,15 +404,6 @@ def apply(base_url: str, model: str, api_key: str, relaunch: bool) -> int:
                 pass
     except OSError:
         pass
-    try:
-        db_size = db_path.stat().st_size if db_path.exists() else 0
-        if db_size > 200 * 1024 * 1024:
-            # Skip multi-hundred-MB file copy; we only patch a few ItemTable keys.
-            backup = None
-        else:
-            shutil.copy2(db_path, backup)
-    except Exception as e:
-        return out(False, message=f"Không backup state.vscdb: {e}")
 
     encrypted = encrypt_electron_secret(api_key)
     if encrypted and decrypt_electron_secret(encrypted) != api_key:
@@ -478,7 +465,6 @@ def apply(base_url: str, model: str, api_key: str, relaunch: bool) -> int:
         baseUrl=base_url,
         model=model,
         cursorRestarted=restarted,
-        backup=str(backup) if backup else "",
         keyEncrypted=bool(encrypted),
     )
 
