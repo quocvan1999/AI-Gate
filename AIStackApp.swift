@@ -3,6 +3,7 @@ import AppKit
 import Foundation
 import Security
 import CryptoKit
+import UniformTypeIdentifiers
 
 @main
 struct AIStackApp: App {
@@ -649,6 +650,8 @@ final class AppState: ObservableObject {
     @Published var cursorLatencyMs: Int? = nil
     @Published var cursorTestOk: Bool? = nil
     @Published var showCursorDetails: Bool = false
+    @Published var backupBusy: Bool = false
+    @Published var backupMessage: String = ""
     private var lastBridgeHealAttempt: Date? = nil
     private var previousBridgeReady: Bool? = nil
     /// Bridge status: poll Tailscale thưa; khi đang recover thì dày hơn.
@@ -783,6 +786,7 @@ final class AppState: ObservableObject {
     enum Section: String, CaseIterable, Identifiable {
         case overview = "Overview"
         case proxies = "Proxies"
+        case backup = "Backup"
         case environment = "Environment"
         case logs = "Logs"
 
@@ -791,6 +795,7 @@ final class AppState: ObservableObject {
             switch self {
             case .overview: return "square.grid.2x2.fill"
             case .proxies: return "antenna.radiowaves.left.and.right"
+            case .backup: return "externaldrive.fill"
             case .environment: return "cube.fill"
             case .logs: return "doc.text.fill"
             }
@@ -799,6 +804,7 @@ final class AppState: ObservableObject {
             switch self {
             case .overview: return "Status & services"
             case .proxies: return "Local endpoints"
+            case .backup: return "Save & restore config"
             case .environment: return "Runtime setup"
             case .logs: return "Live output"
             }
@@ -807,6 +813,7 @@ final class AppState: ObservableObject {
             switch self {
             case .overview: return Color(red: 0.20, green: 0.52, blue: 0.98)
             case .proxies: return Color(red: 0.38, green: 0.34, blue: 0.93)
+            case .backup: return Color(red: 0.22, green: 0.72, blue: 0.45)
             case .environment: return Color(red: 0.96, green: 0.57, blue: 0.13)
             case .logs: return Color(red: 0.55, green: 0.55, blue: 0.62)
             }
@@ -2751,6 +2758,94 @@ final class AppState: ObservableObject {
     private func saveProxies() {
         proxyStore.save(proxies)
     }
+
+    // MARK: - Backup / Restore
+
+    func exportBackup() {
+        guard !backupBusy else { return }
+        let panel = NSSavePanel()
+        panel.title = "Lưu backup AI Gate"
+        panel.nameFieldStringValue = Self.defaultBackupFilename()
+        panel.canCreateDirectories = true
+        panel.allowedContentTypes = [.init(filenameExtension: "aigate")!]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        backupBusy = true
+        backupMessage = "Đang tạo backup..."
+        runManager("--backup-export", extraArgs: ["--output", url.path]) { [weak self] output in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.backupBusy = false
+                if let obj = Self.parseJSONObject(output), obj["ok"] as? Bool == true {
+                    let msg = obj["message"] as? String ?? "Backup thành công"
+                    self.backupMessage = msg
+                    self.addLog(msg, level: .success, source: "Backup", notify: true)
+                } else {
+                    let msg = Self.parseJSONObject(output)?["message"] as? String ?? "Backup thất bại"
+                    self.backupMessage = msg
+                    self.addLog(msg, level: .error, source: "Backup", detail: output, notify: true)
+                }
+            }
+        }
+    }
+
+    func importBackup() {
+        guard !backupBusy else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Chọn file backup AI Gate"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.init(filenameExtension: "aigate")!]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        backupBusy = true
+        backupMessage = "Đang restore..."
+        runManager("--backup-import", extraArgs: ["--input", url.path]) { [weak self] output in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.backupBusy = false
+                if let obj = Self.parseJSONObject(output), obj["ok"] as? Bool == true {
+                    let msg = obj["message"] as? String ?? "Restore thành công"
+                    self.backupMessage = msg
+                    self.addLog(msg, level: .success, source: "Backup", notify: true)
+                    self.finishBackupRestore()
+                } else {
+                    let msg = Self.parseJSONObject(output)?["message"] as? String ?? "Restore thất bại"
+                    self.backupMessage = msg
+                    self.addLog(msg, level: .error, source: "Backup", detail: output, notify: true)
+                }
+            }
+        }
+    }
+
+    private func finishBackupRestore() {
+        loadProxies()
+        previewCombo = bridgeStore.loadPreviewCombo(default: previewCombo)
+        cursorAppliedCombo = bridgeStore.loadCursorCombo(default: cursorAppliedCombo)
+        codexAppliedCombo = bridgeStore.loadCodexCombo(default: codexAppliedCombo)
+        isManuallyStopped = false
+        launchBackendIfNeeded()
+        runManager("--restart") { [weak self] _ in
+            Task { @MainActor in
+                self?.refresh()
+                self?.refreshCursorBridge(force: true)
+                self?.refreshTopologySilent(force: true)
+                self?.addLog(
+                    "Đã khởi động lại dịch vụ sau restore. Bật lại Cursor Bridge (Tailscale) nếu cần.",
+                    level: .info,
+                    source: "Backup",
+                    notify: true
+                )
+            }
+        }
+    }
+
+    private static func defaultBackupFilename() -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd-HHmm"
+        return "AI-Gate-Backup-\(fmt.string(from: Date())).aigate"
+    }
 }
 
 // MARK: - Persistence
@@ -3032,6 +3127,8 @@ struct MainWindow: View {
                     OverviewView()
                 case .proxies:
                     ProxiesView(showingAdd: $showingAddProxy)
+                case .backup:
+                    BackupView()
                 case .environment:
                     EnvironmentView()
                 case .logs:
@@ -4780,6 +4877,62 @@ struct StatColumn: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 2)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - Tab: Backup & Restore
+
+struct BackupView: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                PageHeader(
+                    symbol: AppState.Section.backup.icon,
+                    color: AppState.Section.backup.accentColor,
+                    title: "Backup & Restore",
+                    subtitle: "Lưu cấu hình 9Router và AI Gate ra file — mang sang máy khác rồi Import."
+                )
+
+                SettingsCard {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Backup gồm: 9Router, proxy, combo Cursor/Codex. Sau Import app tự apply lại cấu hình.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+
+                        HStack(spacing: 12) {
+                            Button { state.exportBackup() } label: {
+                                Label("Backup", systemImage: "square.and.arrow.up")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(state.backupBusy)
+
+                            Button { state.importBackup() } label: {
+                                Label("Import", systemImage: "square.and.arrow.down")
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(state.backupBusy)
+                        }
+
+                        if state.backupBusy {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text(state.backupMessage.isEmpty ? "Đang xử lý..." : state.backupMessage)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                            }
+                        } else if !state.backupMessage.isEmpty {
+                            Text(state.backupMessage)
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                        }
+                    }
+                    .padding(16)
+                }
+            }
+            .padding(24)
+        }
     }
 }// MARK: - Tab 3: Environment & Setup
 

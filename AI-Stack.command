@@ -89,6 +89,14 @@ elif [[ -f "$MANAGER_DIR/Assets/cursor_responses_shim.py" ]]; then
 elif [[ -f "$MANAGER_DIR/../Assets/cursor_responses_shim.py" ]]; then
   CURSOR_SHIM_PY="$(cd "$MANAGER_DIR/.." && pwd)/Assets/cursor_responses_shim.py"
 fi
+BACKUP_RESTORE_PY=""
+if [[ -f "$MANAGER_DIR/backup_restore.py" ]]; then
+  BACKUP_RESTORE_PY="$MANAGER_DIR/backup_restore.py"
+elif [[ -f "$MANAGER_DIR/Assets/backup_restore.py" ]]; then
+  BACKUP_RESTORE_PY="$MANAGER_DIR/Assets/backup_restore.py"
+elif [[ -f "$MANAGER_DIR/../Assets/backup_restore.py" ]]; then
+  BACKUP_RESTORE_PY="$(cd "$MANAGER_DIR/.." && pwd)/Assets/backup_restore.py"
+fi
 
 mkdir -p "$LOG_DIR" "$BRIDGE_DIR"
 
@@ -181,6 +189,40 @@ cursor_path_health() {
         return 1
     fi
     /usr/bin/python3 "$CURSOR_HEALTH_PY" --model "$model" "$@" 2>/dev/null
+}
+
+backup_restore_py() {
+    if [[ -z "$BACKUP_RESTORE_PY" || ! -f "$BACKUP_RESTORE_PY" ]]; then
+        print '{"ok":false,"message":"Thiếu backup_restore.py trong Resources"}'
+        return 1
+    fi
+    /usr/bin/python3 "$BACKUP_RESTORE_PY" "$@" 2>>"$BRIDGE_LOG"
+}
+
+backup_apply_after_restore() {
+    local cursor_model codex_model
+    cursor_model="$(python3 - <<'PY' 2>/dev/null || echo my-combo
+import json, os
+p = os.path.expanduser("~/Library/Application Support/AI Stack/cursor-bridge.json")
+try:
+    d = json.load(open(p))
+    print(d.get("cursorCombo") or d.get("previewCombo") or d.get("selectedModel") or "my-combo")
+except Exception:
+    print("my-combo")
+PY
+)"
+    codex_model="$(python3 - <<'PY' 2>/dev/null || echo my-combo
+import json, os
+p = os.path.expanduser("~/Library/Application Support/AI Stack/cursor-bridge.json")
+try:
+    d = json.load(open(p))
+    print(d.get("codexCombo") or d.get("previewCombo") or d.get("selectedModel") or "my-combo")
+except Exception:
+    print("my-combo")
+PY
+)"
+    cursor_apply_config "$cursor_model" || true
+    codex_apply_config "$codex_model" || true
 }
 
 codex_apply_config() {
@@ -1741,6 +1783,53 @@ if [[ "${1:-}" == "--bridge-topology" ]]; then
     fi
     /usr/bin/python3 "$CURSOR_HEALTH_PY" --topology 2>/dev/null
     exit $?
+fi
+
+# ============================================================
+# BACKUP / RESTORE (AI Gate configuration bundles)
+# ============================================================
+if [[ "${1:-}" == "--backup-export" ]]; then
+    output=""
+    shift
+    while [[ $# -gt 0 ]]; do
+        if [[ "$1" == "--output" && -n "${2:-}" ]]; then
+            output="$2"
+            shift 2
+        else
+            shift
+        fi
+    done
+    if [[ -z "$output" ]]; then
+        print '{"ok":false,"message":"Thiếu --output"}'
+        exit 1
+    fi
+    backup_restore_py export --output "$output"
+    exit $?
+fi
+
+if [[ "${1:-}" == "--backup-import" ]]; then
+    input=""
+    shift
+    while [[ $# -gt 0 ]]; do
+        if [[ "$1" == "--input" && -n "${2:-}" ]]; then
+            input="$2"
+            shift 2
+        else
+            shift
+        fi
+    done
+    if [[ -z "$input" ]]; then
+        print '{"ok":false,"message":"Thiếu --input"}'
+        exit 1
+    fi
+    stop_port_force "$ROUTER_PORT" "9Router" >/dev/null 2>&1 || true
+    pkill -f "9router" 2>/dev/null || true
+    backup_restore_py import --input "$input"
+    rc=$?
+    if [[ $rc -eq 0 ]]; then
+        backup_apply_after_restore
+    fi
+    exit $rc
 fi
 
 # ============================================================

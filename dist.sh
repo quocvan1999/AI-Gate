@@ -57,6 +57,7 @@ cp "$ROOT/Assets/codex_apply_config.py" "$RES/codex_apply_config.py"
 cp "$ROOT/Assets/codex_test.py" "$RES/codex_test.py"
 cp "$ROOT/Assets/cursor_test.py" "$RES/cursor_test.py"
 cp "$ROOT/Assets/cursor_responses_shim.py" "$RES/cursor_responses_shim.py"
+cp "$ROOT/Assets/backup_restore.py" "$RES/backup_restore.py"
 
 echo "🔏 Code signing (ad-hoc)..."
 codesign --force --deep --sign - "$APP"
