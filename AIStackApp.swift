@@ -4,6 +4,7 @@ import Foundation
 import Security
 import CryptoKit
 import UniformTypeIdentifiers
+import Combine
 
 @main
 struct AIStackApp: App {
@@ -14,6 +15,9 @@ struct AIStackApp: App {
         WindowGroup("AI Gate", id: "main") {
             MainWindow()
                 .environmentObject(state)
+                .environmentObject(state.usage)
+                .environmentObject(state.logsState)
+                .environmentObject(state.topology)
                 .background(MainWindowBootstrap())
         }
         .defaultSize(width: 1440, height: 900)
@@ -28,6 +32,8 @@ struct AIStackApp: App {
         MenuBarExtra {
             MenuBarView()
                 .environmentObject(state)
+                .environmentObject(state.usage)
+                .environmentObject(state.topology)
         } label: {
             MenuBarLogoLabel()
         }
@@ -598,9 +604,103 @@ enum AppWindow {
     }
 }
 
+// MARK: - Focused observable stores (giảm redraw dây chuyền)
+
+@MainActor
+final class UsageStore: ObservableObject {
+    @Published var usageStats = UsageStats()
+    @Published var usagePeriod: UsagePeriod = .today
+    @Published var recentUsage: [UsageRequestItem] = []
+    @Published var activeUsageProviders: Set<String> = []
+    @Published var activeUsageModels: Set<String> = []
+    @Published var lastUsageProvider: String = ""
+    @Published var errorUsageProvider: String = ""
+}
+
+@MainActor
+final class LogsStore: ObservableObject {
+    @Published var logs: [LogEntry] = [
+        LogEntry(timestamp: Date().addingTimeInterval(-300), level: .info, source: "System", message: "AI Gate initialized and configuration loaded successfully", detail: nil),
+        LogEntry(timestamp: Date().addingTimeInterval(-240), level: .info, source: "Environment", message: "Checked runtime dependencies: Darwin, Homebrew, Node v20, 9Router, Go, Git", detail: nil),
+        LogEntry(timestamp: Date().addingTimeInterval(-180), level: .success, source: "9Router", message: "9Router Gateway is ready on port 20128", detail: "Dashboard: http://127.0.0.1:20128/dashboard"),
+        LogEntry(timestamp: Date().addingTimeInterval(-120), level: .success, source: "AgentRouter", message: "AgentRouter Proxy connected on port 8318", detail: "Health URL: http://127.0.0.1:8318/health (1 ms)"),
+        LogEntry(timestamp: Date().addingTimeInterval(-60), level: .info, source: "AutoHeal", message: "All services are operating normally in background", detail: nil)
+    ]
+}
+
+@MainActor
+final class TopologyStore: ObservableObject {
+    @Published var pathHealth = PathHealthStatus()
+    @Published var healthProbeBusy = false
+}
+
 @MainActor
 final class AppState: ObservableObject {
     static let shared = AppState()
+
+    /// Usage / SSE / stats — views nặng chỉ observe store này.
+    let usage = UsageStore()
+    /// Log entries — tab Logs observe trực tiếp.
+    let logsState = LogsStore()
+    /// Topology + path health — graph observe trực tiếp.
+    let topology = TopologyStore()
+
+    private var storeCancellables = Set<AnyCancellable>()
+
+    private init() {
+        forwardStoreChanges(usage)
+        forwardStoreChanges(logsState)
+        forwardStoreChanges(topology)
+    }
+
+    private func forwardStoreChanges(_ store: some ObservableObject) {
+        store.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &storeCancellables)
+    }
+
+    // Aliases — giữ API cũ cho code/view chưa chuyển sang sub-store.
+    var usageStats: UsageStats {
+        get { usage.usageStats }
+        set { usage.usageStats = newValue }
+    }
+    var usagePeriod: UsagePeriod {
+        get { usage.usagePeriod }
+        set { usage.usagePeriod = newValue }
+    }
+    var recentUsage: [UsageRequestItem] {
+        get { usage.recentUsage }
+        set { usage.recentUsage = newValue }
+    }
+    var activeUsageProviders: Set<String> {
+        get { usage.activeUsageProviders }
+        set { usage.activeUsageProviders = newValue }
+    }
+    var activeUsageModels: Set<String> {
+        get { usage.activeUsageModels }
+        set { usage.activeUsageModels = newValue }
+    }
+    var lastUsageProvider: String {
+        get { usage.lastUsageProvider }
+        set { usage.lastUsageProvider = newValue }
+    }
+    var errorUsageProvider: String {
+        get { usage.errorUsageProvider }
+        set { usage.errorUsageProvider = newValue }
+    }
+    var logs: [LogEntry] {
+        get { logsState.logs }
+        set { logsState.logs = newValue }
+    }
+    var pathHealth: PathHealthStatus {
+        get { topology.pathHealth }
+        set { topology.pathHealth = newValue }
+    }
+    var healthProbeBusy: Bool {
+        get { topology.healthProbeBusy }
+        set { topology.healthProbeBusy = newValue }
+    }
 
     @Published var selectedSection: Section = .overview
     @Published var routerStatus: ServiceStatus = .down
@@ -616,19 +716,6 @@ final class AppState: ObservableObject {
     @Published var toasts: [ToastItem] = []
     @Published var testingProxyIDs: Set<UUID> = []
     @Published var bridgeStatus = CursorBridgeStatus()
-    @Published var pathHealth = PathHealthStatus()
-    /// REQ/IN/OUT/COST theo `usagePeriod` — nguồn REST riêng, không lấy từ SSE.
-    @Published var usageStats = UsageStats()
-    /// Kỳ thống kê trên Topology — mặc định Today như 9Router.
-    @Published var usagePeriod: UsagePeriod = .today
-    @Published var recentUsage: [UsageRequestItem] = []
-    /// Provider đang in-flight (từ SSE `activeRequests`) — glow LIVE như 9Router.
-    @Published var activeUsageProviders: Set<String> = []
-    /// Model đang in-flight (SSE `activeRequests[].model`) — khớp node khi provider là UUID.
-    @Published var activeUsageModels: Set<String> = []
-    /// Provider của request mới nhất (`recentRequests[0]`).
-    @Published var lastUsageProvider: String = ""
-    @Published var errorUsageProvider: String = ""
     @Published var bridgeBusy: Bool = false
     @Published var bridgeHealing: Bool = false
     @Published var bridgeSetupRunning: Bool = false
@@ -661,8 +748,6 @@ final class AppState: ObservableObject {
     private let recoveringBridgeMinInterval: TimeInterval = 5
     private var lastCredentialsAt: Date?
     private let silentCredentialsMinInterval: TimeInterval = 30
-    /// Chỉ true khi user bấm Làm mới (hiện spinner/toast) — refresh ngầm không đụng flag này.
-    @Published var healthProbeBusy: Bool = false
     private var healthInFlight = false
     private var lastSilentHealthAt: Date?
     private let silentHealthMinInterval: TimeInterval = 18
@@ -688,6 +773,13 @@ final class AppState: ObservableObject {
     private var topologyInFlight = false
     private var lastTopologyAt: Date?
     private let topologyMinInterval: TimeInterval = 0.9
+    private let topologyIntervalLive: TimeInterval = 1.0
+    private let topologyIntervalIdle: TimeInterval = 2.5
+    /// Heartbeat nhẹ cho menu bar / sidebar khi không ở tab Overview/Proxies.
+    private var menuBarTimer: Timer?
+    private let menuBarHeartbeatInterval: TimeInterval = 20.0
+    private var lastRouterCheckAt: Date?
+    private let routerCheckMinInterval: TimeInterval = 3.0
 
     /// Hiển thị tham khảo; copy vẫn dùng full key.
     var maskedNineRouterApiKey: String {
@@ -705,16 +797,9 @@ final class AppState: ObservableObject {
         return "my-combo"
     }
 
-    @Published var logs: [LogEntry] = [
-        LogEntry(timestamp: Date().addingTimeInterval(-300), level: .info, source: "System", message: "AI Gate initialized and configuration loaded successfully", detail: nil),
-        LogEntry(timestamp: Date().addingTimeInterval(-240), level: .info, source: "Environment", message: "Checked runtime dependencies: Darwin, Homebrew, Node v20, 9Router, Go, Git", detail: nil),
-        LogEntry(timestamp: Date().addingTimeInterval(-180), level: .success, source: "9Router", message: "9Router Gateway is ready on port 20128", detail: "Dashboard: http://127.0.0.1:20128/dashboard"),
-        LogEntry(timestamp: Date().addingTimeInterval(-120), level: .success, source: "AgentRouter", message: "AgentRouter Proxy connected on port 8318", detail: "Health URL: http://127.0.0.1:8318/health (1 ms)"),
-        LogEntry(timestamp: Date().addingTimeInterval(-60), level: .info, source: "AutoHeal", message: "All services are operating normally in background", detail: nil)
-    ]
-
     private var backend: Process?
-    private var timer: Timer?
+    /// Poll theo tab đang mở — không chạy poll nền cho tab khác.
+    private var sectionTimer: Timer?
     private var logTimer: Timer?
     private var logFileOffsets: [String: UInt64] = [:]
     private var quitting = false
@@ -826,44 +911,126 @@ final class AppState: ObservableObject {
         previewCombo = bridgeStore.loadPreviewCombo(default: "my-combo")
         cursorAppliedCombo = bridgeStore.loadCursorCombo(default: "")
         codexAppliedCombo = bridgeStore.loadCodexCombo(default: "")
-        checkEnvironment()
         launchBackendIfNeeded()
+        startMenuBarHeartbeat()
+        syncSectionPolling()
+    }
+
+    /// Ping router nhẹ — giữ menu bar/sidebar không quá cũ khi không ở Overview/Proxies.
+    private func startMenuBarHeartbeat() {
+        menuBarTimer?.invalidate()
+        refreshRouterStatusOnly(force: true)
+        menuBarTimer = Timer.scheduledTimer(withTimeInterval: menuBarHeartbeatInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, !self.quitting else { return }
+                if self.selectedSection == .overview || self.selectedSection == .proxies {
+                    return
+                }
+                self.refreshRouterStatusOnly(force: false)
+            }
+        }
+    }
+
+    private func topologyHasLiveTraffic() -> Bool {
+        !usage.activeUsageProviders.isEmpty
+            || !usage.activeUsageModels.isEmpty
+            || topology.pathHealth.topologyProviders.contains(where: \.live)
+    }
+
+    private func scheduleTopologyTimer() {
+        topologyTimer?.invalidate()
+        guard selectedSection == .overview, !quitting else { return }
+        let interval = topologyHasLiveTraffic() ? topologyIntervalLive : topologyIntervalIdle
+        topologyTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.selectedSection == .overview else { return }
+                self.refreshTopologySilent()
+                self.scheduleTopologyTimer()
+            }
+        }
+    }
+
+    /// Bật poll/fetch đúng tab hiện tại; tắt hết khi chuyển tab.
+    func syncSectionPolling() {
+        guard !quitting else { return }
+        stopSectionPolling()
+        switch selectedSection {
+        case .overview:
+            startOverviewPolling()
+        case .proxies:
+            startProxiesPolling()
+        case .environment:
+            startEnvironmentPolling()
+        case .logs:
+            startLogsPolling()
+        case .backup:
+            break
+        }
+    }
+
+    private func stopSectionPolling() {
+        sectionTimer?.invalidate()
+        sectionTimer = nil
+        topologyTimer?.invalidate()
+        topologyTimer = nil
+        usageTimer?.invalidate()
+        usageTimer = nil
+        logTimer?.invalidate()
+        logTimer = nil
+        stopUsageSSE()
+    }
+
+    private func startOverviewPolling() {
         refresh()
         refreshCursorBridge(force: true)
-        startLiveLogStreaming()
-
-        timer?.invalidate()
-        // HTTP dashboard/proxy 5s; bridge status tự throttle bên trong (20s / 5s khi recover).
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.refresh()
-                self?.refreshCursorBridge()
-            }
-        }
-
-        topologyTimer?.invalidate()
-        // HTTP nhẹ (~10ms) — tắt/thêm provider trên 9Router hiện lên sơ đồ gần như ngay.
-        topologyTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.refreshTopologySilent()
-            }
-        }
         refreshTopologySilent(force: true)
+        refreshUsageSilent(force: true)
+        refreshUsagePeriodStats(force: true)
+        startUsageSSE()
 
-        usageTimer?.invalidate()
-        // Fallback thưa khi SSE chưa nối / lỗi — realtime chính = /api/usage/stream.
+        scheduleTopologyTimer()
+
         usageTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self = self else { return }
+                guard let self, self.selectedSection == .overview else { return }
                 if !self.usageSSEConnected {
                     self.refreshUsageSilent(force: false)
                 }
                 self.refreshUsagePeriodStats(force: false)
             }
         }
-        startUsageSSE()
-        refreshUsageSilent(force: true)
-        refreshUsagePeriodStats(force: true)
+
+        sectionTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.selectedSection == .overview else { return }
+                self.refresh()
+                self.refreshCursorBridge()
+            }
+        }
+    }
+
+    private func startProxiesPolling() {
+        refresh()
+        sectionTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.selectedSection == .proxies else { return }
+                self.refresh()
+            }
+        }
+    }
+
+    private func startEnvironmentPolling() {
+        checkEnvironment(force: true)
+        sectionTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.selectedSection == .environment else { return }
+                self.checkEnvironment(force: true)
+            }
+        }
+    }
+
+    private func startLogsPolling() {
+        startLiveLogStreaming()
     }
 
     private func startLiveLogStreaming() {
@@ -893,6 +1060,7 @@ final class AppState: ObservableObject {
     }
 
     private func readNewLogLines(path: String, source: String) {
+        guard selectedSection == .logs else { return }
         guard let file = FileHandle(forReadingAtPath: path) else { return }
         let currentOffset = logFileOffsets[path] ?? 0
         file.seekToEndOfFile()
@@ -930,9 +1098,20 @@ final class AppState: ObservableObject {
 
 
     func refresh() {
-        guard !quitting else { return }
+        refreshRouterStatusOnly(force: true)
+        refreshProxyStatuses()
+    }
 
-        // Check 9Router
+    /// Chỉ check 9Router — dùng heartbeat menu bar + auto-heal nhẹ.
+    func refreshRouterStatusOnly(force: Bool = false) {
+        guard !quitting else { return }
+        if !force,
+           let last = lastRouterCheckAt,
+           Date().timeIntervalSince(last) < routerCheckMinInterval {
+            return
+        }
+        lastRouterCheckAt = Date()
+
         let prevRouter = routerStatus
         check("http://127.0.0.1:20128/dashboard") { [weak self] ok in
             Task { @MainActor in
@@ -950,21 +1129,29 @@ final class AppState: ObservableObject {
                     }
                     self.routerStatus = newStatus
                     if newStatus == .ready {
-                        self.startUsageSSE()
-                        self.refreshTopologySilent(force: true)
-                        self.refreshUsagePeriodStats(force: true)
+                        if self.selectedSection == .overview {
+                            self.startUsageSSE()
+                            self.refreshTopologySilent(force: true)
+                            self.refreshUsagePeriodStats(force: true)
+                            self.scheduleTopologyTimer()
+                        }
                     } else {
                         self.stopUsageSSE()
                     }
                 } else if newStatus == .ready {
-                    // SSE đã chạy — chỉ reconnect nếu bị đứt.
-                    self.ensureUsageSSE()
+                    if self.selectedSection == .overview {
+                        self.ensureUsageSSE()
+                    }
                 }
                 self.updateRefreshState(didChange: changed)
             }
         }
+    }
 
-        // Check each Proxy
+    /// Health check từng proxy — tab Proxies / Overview.
+    func refreshProxyStatuses() {
+        guard !quitting else { return }
+
         for i in proxies.indices {
             let p = proxies[i]
             let prevProxyStatus = p.status
@@ -1038,7 +1225,8 @@ final class AppState: ObservableObject {
 
     // MARK: Environment Checks & Bootstrap
 
-    func checkEnvironment() {
+    func checkEnvironment(force: Bool = false) {
+        if !force, selectedSection != .environment { return }
         DispatchQueue.global(qos: .userInitiated).async {
             var items: [EnvItem] = []
             let envPath = "export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.nvm/versions/node/v20.20.2/bin:$PATH\"; "
@@ -1183,7 +1371,7 @@ final class AppState: ObservableObject {
                     } else {
                         self.addLog("Setup exited with status code: \(p.terminationStatus)", level: .error, source: "Installer", notify: true)
                     }
-                    self.checkEnvironment()
+                    self.checkEnvironment(force: true)
                     self.refresh()
                 }
             } catch {
@@ -1418,6 +1606,7 @@ final class AppState: ObservableObject {
     /// - force: bỏ throttle + luôn chạy Tailscale probe (toggle / Làm mới / sau setup).
     func refreshCursorBridge(force: Bool = false) {
         guard !quitting else { return }
+        if !force, selectedSection != .overview { return }
         loadNineRouterCredentials(force: force)
 
         let recovering = bridgeStatus.isRecovering
@@ -1590,6 +1779,7 @@ final class AppState: ObservableObject {
     /// `force`: sync Python đầy đủ (kèm free/noAuth).
     func refreshTopologySilent(force: Bool = false) {
         guard !quitting, routerStatus == .ready else { return }
+        if !force, selectedSection != .overview { return }
         if topologyInFlight { return }
         if !force, let last = lastTopologyAt, Date().timeIntervalSince(last) < topologyMinInterval {
             return
@@ -1675,19 +1865,22 @@ final class AppState: ObservableObject {
 
         let active = merged.filter(\.usable).count
         let count = merged.count
-        guard Self.topologyFingerprint(pathHealth.topologyProviders)
+        guard Self.topologyFingerprint(topology.pathHealth.topologyProviders)
             != Self.topologyFingerprint(merged)
-            || pathHealth.topologyCount != count
-            || pathHealth.topologyActive != active else { return }
-        pathHealth.topologyProviders = merged
-        pathHealth.topologyCount = count
-        pathHealth.topologyActive = active
+            || topology.pathHealth.topologyCount != count
+            || topology.pathHealth.topologyActive != active else { return }
+        var ph = topology.pathHealth
+        ph.topologyProviders = merged
+        ph.topologyCount = count
+        ph.topologyActive = active
+        topology.pathHealth = ph
     }
 
     /// Fallback SQLite khi SSE chưa sẵn sàng. Realtime chính: `startUsageSSE()`.
     /// An toàn CPU: tối đa 1 job sqlite tại một thời điểm — không chồng force.
     func refreshUsageSilent(force: Bool = false) {
         guard !quitting else { return }
+        if !force, selectedSection != .overview { return }
         if usageSSEConnected, !force { return }
         if usageInFlight {
             if force { usageNeedsRefresh = true }
@@ -1739,7 +1932,7 @@ final class AppState: ObservableObject {
     }
 
     func startUsageSSE() {
-        guard !quitting else { return }
+        guard !quitting, selectedSection == .overview else { return }
         usageSSEGeneration &+= 1
         let gen = usageSSEGeneration
         usageSSETask?.cancel()
@@ -1750,7 +1943,7 @@ final class AppState: ObservableObject {
 
     /// Không restart SSE nếu đang nối — tránh flicker mỗi poll 5s.
     func ensureUsageSSE() {
-        guard !quitting, routerStatus == .ready else { return }
+        guard !quitting, routerStatus == .ready, selectedSection == .overview else { return }
         if usageSSEConnected, usageSSETask != nil { return }
         startUsageSSE()
     }
@@ -1905,12 +2098,18 @@ final class AppState: ObservableObject {
     private func applyUsageSSESnapshot(_ snap: UsageSSESnapshot) {
         // LIVE trước — nhẹ nhất. Không đụng REST stats trên hot path.
         let recentChanged = recentUsage != snap.recent
-        if activeUsageProviders != snap.activeProviders { activeUsageProviders = snap.activeProviders }
+        let liveChanged = activeUsageProviders != snap.activeProviders
+            || activeUsageModels != snap.activeModels
+        if liveChanged { activeUsageProviders = snap.activeProviders }
         if activeUsageModels != snap.activeModels { activeUsageModels = snap.activeModels }
         if lastUsageProvider != snap.lastProvider { lastUsageProvider = snap.lastProvider }
         if errorUsageProvider != snap.errorProvider { errorUsageProvider = snap.errorProvider }
         if recentChanged { recentUsage = snap.recent }
         lastUsageAt = Date()
+
+        if liveChanged, selectedSection == .overview {
+            scheduleTopologyTimer()
+        }
 
         // Totals theo kỳ: debounce riêng — không block glow.
         if recentChanged, usagePeriod == .today {
@@ -1950,6 +2149,7 @@ final class AppState: ObservableObject {
     /// REQ/IN/OUT/COST theo kỳ — `GET /api/usage/stats?period=` (tách khỏi SSE).
     func refreshUsagePeriodStats(force: Bool = false) {
         guard !quitting, routerStatus == .ready else { return }
+        if !force, selectedSection != .overview { return }
         if usagePeriodInFlight { return }
         if !force, let last = lastUsagePeriodAt, Date().timeIntervalSince(last) < usagePeriodMinInterval {
             return
@@ -2077,9 +2277,11 @@ final class AppState: ObservableObject {
         }
 
         guard changed else { return }
-        pathHealth.topologyProviders = items
-        pathHealth.topologyActive = items.filter(\.usable).count
-        pathHealth.topologyCount = items.count
+        var ph = topology.pathHealth
+        ph.topologyProviders = items
+        ph.topologyActive = items.filter(\.usable).count
+        ph.topologyCount = items.count
+        topology.pathHealth = ph
     }
 
     func applyCursorConfig(model: String? = nil, relaunchNotice: Bool = true) {
@@ -2260,7 +2462,7 @@ final class AppState: ObservableObject {
                 Task { @MainActor in
                     self.bridgeSetupRunning = false
                     self.bridgeBusy = false
-                    self.checkEnvironment()
+                    self.checkEnvironment(force: true)
                     self.refreshCursorBridge(force: true)
                     if p.terminationStatus == 0 {
                         self.addLog("Cursor Bridge auto setup completed", level: .success, source: "CursorBridge", notify: true)
@@ -2622,8 +2824,10 @@ final class AppState: ObservableObject {
     func quit() {
         guard !quitting else { return }
         quitting = true
-        timer?.invalidate()
-        timer = nil
+        menuBarTimer?.invalidate()
+        menuBarTimer = nil
+        sectionTimer?.invalidate()
+        sectionTimer = nil
         topologyTimer?.invalidate()
         topologyTimer = nil
         logTimer?.invalidate()
@@ -2644,8 +2848,10 @@ final class AppState: ObservableObject {
             return
         }
         quitting = true
-        timer?.invalidate()
-        timer = nil
+        menuBarTimer?.invalidate()
+        menuBarTimer = nil
+        sectionTimer?.invalidate()
+        sectionTimer = nil
         topologyTimer?.invalidate()
         topologyTimer = nil
         logTimer?.invalidate()
@@ -3142,6 +3348,9 @@ struct MainWindow: View {
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 1100, minHeight: 700)
+        .onChange(of: state.selectedSection) { _, _ in
+            state.syncSectionPolling()
+        }
         .sheet(isPresented: $showingAddProxy) {
             ProxyEditor(proxy: nil) { p in state.addProxy(p) }
                 .overlay(alignment: .bottom) {
@@ -4004,18 +4213,20 @@ struct OverviewUsageMetricsBar: View, Equatable {
 
 struct OverviewGraphCard: View {
     @EnvironmentObject private var state: AppState
+    @EnvironmentObject private var usage: UsageStore
+    @EnvironmentObject private var topology: TopologyStore
 
     /// Topology Usage 9Router — không lấy model list trong combo.
     private var topologyProviders: [ProviderHealthItem] {
-        let topo = state.pathHealth.topologyProviders
-        return topo.isEmpty ? state.pathHealth.providers : topo
+        let topo = topology.pathHealth.topologyProviders
+        return topo.isEmpty ? topology.pathHealth.providers : topo
     }
 
     private var providerTopologyRatio: String {
         let all = topologyProviders
         guard !all.isEmpty else {
-            let c = state.pathHealth.topologyCount
-            if c > 0 { return "\(state.pathHealth.topologyActive)/\(c)" }
+            let c = topology.pathHealth.topologyCount
+            if c > 0 { return "\(topology.pathHealth.topologyActive)/\(c)" }
             return "—/—"
         }
         let ok = all.filter(\.usable).count
@@ -4033,9 +4244,9 @@ struct OverviewGraphCard: View {
 
     private var topologySourceCaption: String {
         if state.bridgeStatus.wanted {
-            let live = !state.activeUsageProviders.isEmpty || !state.activeUsageModels.isEmpty
+            let live = !usage.activeUsageProviders.isEmpty || !usage.activeUsageModels.isEmpty
             if live { return "· LIVE (request tới 9Router)" }
-            if !state.pathHealth.cursorPathOk {
+            if !topology.pathHealth.cursorPathOk {
                 return "· Cursor chưa tới 9Router (Network Error?)"
             }
             return "· chờ request Cursor/IDE"
@@ -4057,7 +4268,7 @@ struct OverviewGraphCard: View {
 
                     Spacer(minLength: 0)
 
-                    if state.healthProbeBusy { ProgressView().controlSize(.mini) }
+                    if topology.healthProbeBusy { ProgressView().controlSize(.mini) }
 
                     Button {
                         state.refreshStatusNow(live: true)
@@ -4066,15 +4277,15 @@ struct OverviewGraphCard: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(state.healthProbeBusy || state.routerStatus != .ready)
+                    .disabled(topology.healthProbeBusy || state.routerStatus != .ready)
                     .help("Làm mới trạng thái provider")
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
 
                 OverviewUsageMetricsBar(
-                    period: state.usagePeriod,
-                    stats: state.usageStats,
+                    period: usage.usagePeriod,
+                    stats: usage.usageStats,
                     onSelect: { state.setUsagePeriod($0) }
                 )
                 .equatable()
@@ -4085,18 +4296,18 @@ struct OverviewGraphCard: View {
                             .font(.system(size: 12))
                             .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                     } else if topologyProviders.isEmpty {
-                        Text(state.healthProbeBusy ? "Đang tải…" : "Chưa có provider")
+                        Text(topology.healthProbeBusy ? "Đang tải…" : "Chưa có provider")
                             .font(.system(size: 12))
                             .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                     } else {
                         ComboTopologyGraph(
                             comboName: "9Router",
                             providers: topologyProviders,
-                            recentUsage: state.recentUsage,
-                            activeProviders: state.activeUsageProviders,
-                            activeModels: state.activeUsageModels,
-                            lastProvider: state.lastUsageProvider,
-                            errorProvider: state.errorUsageProvider
+                            recentUsage: usage.recentUsage,
+                            activeProviders: usage.activeUsageProviders,
+                            activeModels: usage.activeUsageModels,
+                            lastProvider: usage.lastUsageProvider,
+                            errorProvider: usage.errorUsageProvider
                         )
                     }
                 }
@@ -4111,10 +4322,11 @@ struct OverviewGraphCard: View {
 }
 
 struct OverviewRecentCard: View {
-    @EnvironmentObject private var state: AppState
+    @EnvironmentObject private var usage: UsageStore
+    @EnvironmentObject private var topology: TopologyStore
 
     private var comboKeys: Set<String> {
-        Set(state.pathHealth.providers.flatMap { item -> [String] in
+        Set(topology.pathHealth.providers.flatMap { item -> [String] in
             let mid = item.model
             let short = mid.split(separator: "/").last.map(String.init) ?? mid
             return [mid.lowercased(), short.lowercased()]
@@ -4124,7 +4336,7 @@ struct OverviewRecentCard: View {
     var body: some View {
         SettingsCard(header: "Recent Requests") {
             VStack(alignment: .leading, spacing: 0) {
-                if state.recentUsage.isEmpty {
+                if usage.recentUsage.isEmpty {
                     Text("Chưa có request.")
                         .font(.system(size: 12))
                         .foregroundStyle(Color(nsColor: .secondaryLabelColor))
@@ -4132,7 +4344,7 @@ struct OverviewRecentCard: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 1) {
-                            ForEach(state.recentUsage.prefix(18)) { row in
+                            ForEach(usage.recentUsage.prefix(18)) { row in
                                 recentRow(row)
                             }
                         }
@@ -4320,6 +4532,35 @@ enum ComboActivity {
 }
 
 /// Topology radial kiểu 9Router — cubic edges uyển chuyển; animate dash/particle khi live/warm.
+private struct TopologyGridBackground: View, Equatable {
+    let size: CGSize
+
+    var body: some View {
+        Canvas { ctx, canvasSize in
+            let step: CGFloat = 26
+            var p = Path()
+            var x: CGFloat = 0
+            while x <= canvasSize.width {
+                p.move(to: CGPoint(x: x, y: 0))
+                p.addLine(to: CGPoint(x: x, y: canvasSize.height))
+                x += step
+            }
+            var y: CGFloat = 0
+            while y <= canvasSize.height {
+                p.move(to: CGPoint(x: 0, y: y))
+                p.addLine(to: CGPoint(x: canvasSize.width, y: y))
+                y += step
+            }
+            ctx.stroke(p, with: .color(.white.opacity(0.04)), lineWidth: 1)
+        }
+        .frame(width: size.width, height: size.height)
+        .background(Color(red: 0.07, green: 0.08, blue: 0.10))
+        .drawingGroup()
+        .allowsHitTesting(false)
+    }
+}
+
+/// Topology radial kiểu 9Router — cubic edges uyển chuyển; animate dash/particle khi live/warm.
 struct ComboTopologyGraph: View {
     struct Node: Identifiable {
         let id: String
@@ -4335,6 +4576,16 @@ struct ComboTopologyGraph: View {
         let enabled: Bool
     }
 
+    private struct EdgeGeometry {
+        let index: Int
+        let node: Node
+        let from: CGPoint
+        let control1: CGPoint
+        let control2: CGPoint
+        let to: CGPoint
+        let path: Path
+    }
+
     let comboName: String
     let providers: [ProviderHealthItem]
     let recentUsage: [UsageRequestItem]
@@ -4344,9 +4595,25 @@ struct ComboTopologyGraph: View {
     let errorProvider: String
 
     @State private var zoom: CGFloat = 1.0
+    @State private var cachedNodes: [Node] = []
 
     /// Hiện đủ model trong combo 9Router (kể cả Cursor/Codex trong list).
     private var visibleProviders: [ProviderHealthItem] { providers }
+
+    private var nodesInputKey: String {
+        let provFP = providers.map {
+            "\($0.provider)|\($0.displayName)|\($0.model)|\($0.testStatus)|\($0.usable)|\($0.active)"
+        }.joined(separator: ";")
+        let actFP = ComboActivity.levels(
+            for: visibleProviders,
+            activeProviders: activeProviders,
+            activeModels: activeModels,
+            lastProvider: lastProvider,
+            errorProvider: errorProvider,
+            recent: recentUsage
+        ).map { "\($0.key):\($0.value)" }.sorted().joined(separator: ",")
+        return "\(provFP)#\(actFP)"
+    }
 
     static func isIDEProvider(_ item: ProviderHealthItem) -> Bool {
         let prefix = (item.model.split(separator: "/").first.map(String.init) ?? item.provider).lowercased()
@@ -4361,9 +4628,9 @@ struct ComboTopologyGraph: View {
         return false
     }
 
-    private var anyLive: Bool { nodes.contains { $0.activity == .live } }
+    private var anyLive: Bool { cachedNodes.contains { $0.activity == .live } }
 
-    private var nodes: [Node] {
+    private func buildNodes() -> [Node] {
         let acts = ComboActivity.levels(
             for: visibleProviders,
             activeProviders: activeProviders,
@@ -4429,42 +4696,35 @@ struct ComboTopologyGraph: View {
                 height: (geo.size.height / 2).rounded() * 2
             )
             let center = CGPoint(x: size.width / 2, y: size.height / 2)
-            let list = nodes
+            let list = cachedNodes
             let pillW: CGFloat = list.count >= 10 ? 118 : 128
             let pillH: CGFloat = list.contains(where: { !$0.model.isEmpty }) ? 42 : 34
             let spots = layoutSpots(count: list.count, size: size, zoom: zoom, pillW: pillW, pillH: pillH)
             let hubInset: CGFloat = 32
             let nodeInset: CGFloat = pillW * 0.45
-
+            let edges = buildEdges(
+                list: list,
+                spots: spots,
+                center: center,
+                hubInset: hubInset,
+                nodeInset: nodeInset
+            )
             let needsMotion = list.contains { $0.activity == .live }
 
             ZStack {
-                grid
+                TopologyGridBackground(size: size)
+                    .equatable()
 
-                // Canvas 1 lớp — nhẹ; chỉ TimelineView khi có LIVE thật (không warm).
-                Group {
-                    if needsMotion {
-                        TimelineView(.animation(minimumInterval: 1.0 / 12.0, paused: false)) { context in
-                            let phase = context.date.timeIntervalSinceReferenceDate
-                            edgesCanvas(
-                                list: list,
-                                spots: spots,
-                                center: center,
-                                hubInset: hubInset,
-                                nodeInset: nodeInset,
-                                size: size,
-                                phase: phase
-                            )
-                        }
-                    } else {
-                        edgesCanvas(
-                            list: list,
-                            spots: spots,
-                            center: center,
-                            hubInset: hubInset,
-                            nodeInset: nodeInset,
+                // Layer tĩnh: idle/warm/error vẽ 1 lần mỗi lần layout đổi.
+                staticEdgesCanvas(edges: edges, size: size)
+
+                // Layer động: chỉ animate line live để giảm redraw toàn bộ topology.
+                if needsMotion {
+                    TimelineView(.animation(minimumInterval: 1.0 / 10.0, paused: false)) { context in
+                        liveEdgesCanvas(
+                            edges: edges,
                             size: size,
-                            phase: 0
+                            phase: context.date.timeIntervalSinceReferenceDate
                         )
                     }
                 }
@@ -4488,57 +4748,86 @@ struct ComboTopologyGraph: View {
         }
         .clipShape(Rectangle())
         .transaction { $0.animation = nil }
+        .task(id: nodesInputKey) {
+            cachedNodes = buildNodes()
+        }
         .onChange(of: providers.count) { _, _ in zoom = 1 }
     }
 
-    private func edgesCanvas(
+    private func buildEdges(
         list: [Node],
         spots: [CGPoint],
         center: CGPoint,
         hubInset: CGFloat,
-        nodeInset: CGFloat,
-        size: CGSize,
-        phase: TimeInterval
-    ) -> some View {
-        Canvas { ctx, _ in
-            let liveColor = Color(red: 0.20, green: 0.88, blue: 0.78)
-            for (idx, n) in list.enumerated() {
-                guard idx < spots.count else { continue }
-                let (a, b) = edgeAnchor(from: center, to: spots[idx], fromInset: hubInset, toInset: nodeInset)
-                let (c1, c2) = cubicControls(from: a, to: b, hub: center)
-                var path = Path()
-                path.move(to: a)
-                path.addCurve(to: b, control1: c1, control2: c2)
+        nodeInset: CGFloat
+    ) -> [EdgeGeometry] {
+        var edges: [EdgeGeometry] = []
+        edges.reserveCapacity(list.count)
+        for (idx, n) in list.enumerated() {
+            guard idx < spots.count else { continue }
+            let (a, b) = edgeAnchor(from: center, to: spots[idx], fromInset: hubInset, toInset: nodeInset)
+            let (c1, c2) = cubicControls(from: a, to: b, hub: center)
+            var path = Path()
+            path.move(to: a)
+            path.addCurve(to: b, control1: c1, control2: c2)
+            edges.append(
+                EdgeGeometry(
+                    index: idx,
+                    node: n,
+                    from: a,
+                    control1: c1,
+                    control2: c2,
+                    to: b,
+                    path: path
+                )
+            )
+        }
+        return edges
+    }
 
-                switch n.activity {
+    private func staticEdgesCanvas(edges: [EdgeGeometry], size: CGSize) -> some View {
+        Canvas { ctx, _ in
+            for edge in edges {
+                switch edge.node.activity {
                 case .idle:
                     ctx.stroke(
-                        path,
-                        with: .color(.white.opacity(n.connected ? 0.12 : 0.05)),
+                        edge.path,
+                        with: .color(.white.opacity(edge.node.connected ? 0.12 : 0.05)),
                         lineWidth: 1.1
                     )
                 case .warm:
-                    ctx.stroke(path, with: .color(Color.orange.opacity(0.18)), lineWidth: 6)
-                    ctx.stroke(path, with: .color(Color.orange.opacity(0.85)), lineWidth: 1.7)
+                    ctx.stroke(edge.path, with: .color(Color.orange.opacity(0.14)), lineWidth: 4.5)
+                    ctx.stroke(edge.path, with: .color(Color.orange.opacity(0.82)), lineWidth: 1.6)
                 case .live:
-                    let dashPhase = CGFloat(phase * -42)
-                    ctx.stroke(path, with: .color(liveColor.opacity(0.22)), lineWidth: 7)
-                    ctx.stroke(
-                        path,
-                        with: .color(liveColor),
-                        style: StrokeStyle(lineWidth: 2.1, lineCap: .round, dash: [6, 7], dashPhase: dashPhase)
-                    )
-                    // 1 chấm nhỏ trên cung — vẽ trong Canvas, không .position (tránh lệch UI).
-                    let t = CGFloat((phase * 0.45 + Double(idx) * 0.17).truncatingRemainder(dividingBy: 1))
-                    let pt = cubic(a, c1, c2, b, t)
-                    let glow = Path(ellipseIn: CGRect(x: pt.x - 4, y: pt.y - 4, width: 8, height: 8))
-                    ctx.fill(glow, with: .color(liveColor.opacity(0.35)))
-                    let dot = Path(ellipseIn: CGRect(x: pt.x - 2.2, y: pt.y - 2.2, width: 4.4, height: 4.4))
-                    ctx.fill(dot, with: .color(liveColor))
+                    // Live được render ở layer động riêng để tránh vẽ lại toàn bộ line tĩnh.
+                    break
                 case .error:
-                    ctx.stroke(path, with: .color(Color.red.opacity(0.2)), lineWidth: 6)
-                    ctx.stroke(path, with: .color(Color.red.opacity(0.9)), lineWidth: 1.7)
+                    ctx.stroke(edge.path, with: .color(Color.red.opacity(0.14)), lineWidth: 4.5)
+                    ctx.stroke(edge.path, with: .color(Color.red.opacity(0.9)), lineWidth: 1.6)
                 }
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .allowsHitTesting(false)
+    }
+
+    private func liveEdgesCanvas(edges: [EdgeGeometry], size: CGSize, phase: TimeInterval) -> some View {
+        Canvas { ctx, _ in
+            let liveColor = Color(red: 0.20, green: 0.88, blue: 0.78)
+            let dashPhase = CGFloat(phase * -30)
+            for edge in edges where edge.node.activity == .live {
+                ctx.stroke(edge.path, with: .color(liveColor.opacity(0.18)), lineWidth: 5.5)
+                ctx.stroke(
+                    edge.path,
+                    with: .color(liveColor),
+                    style: StrokeStyle(lineWidth: 1.9, lineCap: .round, dash: [5.5, 7.5], dashPhase: dashPhase)
+                )
+
+                // Dot nhỏ chạy dọc theo cung để giữ cảm giác "live" nhưng nhẹ GPU hơn glow lớn.
+                let t = CGFloat((phase * 0.4 + Double(edge.index) * 0.17).truncatingRemainder(dividingBy: 1))
+                let pt = cubic(edge.from, edge.control1, edge.control2, edge.to, t)
+                let dot = Path(ellipseIn: CGRect(x: pt.x - 2.0, y: pt.y - 2.0, width: 4.0, height: 4.0))
+                ctx.fill(dot, with: .color(liveColor))
             }
         }
         .frame(width: size.width, height: size.height)
@@ -4588,20 +4877,6 @@ struct ComboTopologyGraph: View {
         let a = CGPoint(x: from.x + ux * fromInset, y: from.y + uy * fromInset)
         let b = CGPoint(x: to.x - ux * toInset, y: to.y - uy * toInset)
         return (a, b)
-    }
-
-    private var grid: some View {
-        Canvas { ctx, size in
-            let step: CGFloat = 26
-            var p = Path()
-            var x: CGFloat = 0
-            while x <= size.width { p.move(to: CGPoint(x: x, y: 0)); p.addLine(to: CGPoint(x: x, y: size.height)); x += step }
-            var y: CGFloat = 0
-            while y <= size.height { p.move(to: CGPoint(x: 0, y: y)); p.addLine(to: CGPoint(x: size.width, y: y)); y += step }
-            ctx.stroke(p, with: .color(.white.opacity(0.04)), lineWidth: 1)
-        }
-        .background(Color(red: 0.07, green: 0.08, blue: 0.10))
-        .allowsHitTesting(false)
     }
 
     private func zoomBtn(_ s: String, _ action: @escaping () -> Void) -> some View {
@@ -4728,14 +5003,18 @@ struct ComboTopologyGraph: View {
             ox = -uy
             oy = ux
         }
-        let bulge = min(28, max(10, len * 0.14))
+        let tx = -uy
+        let ty = ux
+        let side: CGFloat = ((mid.x - hub.x) * tx + (mid.y - hub.y) * ty) >= 0 ? 1 : -1
+        let bulge = min(52, max(16, len * 0.2))
+        let sway = min(14, max(4, len * 0.06)) * side
         let c1 = CGPoint(
-            x: a.x + ux * len * 0.33 + ox * bulge,
-            y: a.y + uy * len * 0.33 + oy * bulge
+            x: a.x + ux * len * 0.31 + ox * bulge + tx * sway,
+            y: a.y + uy * len * 0.31 + oy * bulge + ty * sway
         )
         let c2 = CGPoint(
-            x: a.x + ux * len * 0.67 + ox * bulge * 0.9,
-            y: a.y + uy * len * 0.67 + oy * bulge * 0.9
+            x: a.x + ux * len * 0.69 + ox * bulge * 0.86 - tx * sway * 0.45,
+            y: a.y + uy * len * 0.69 + oy * bulge * 0.86 - ty * sway * 0.45
         )
         return (c1, c2)
     }
@@ -5338,17 +5617,30 @@ struct ProxyEditor: View {
 
 struct LogsView: View {
     @EnvironmentObject private var state: AppState
+    @EnvironmentObject private var logsStore: LogsStore
     @State private var selectedLevel: LogLevel = .all
     @State private var searchKeyword: String = ""
+    @State private var debouncedSearchKeyword: String = ""
     @State private var expandedLogId: UUID? = nil
+    @State private var filteredLogs: [LogEntry] = []
+    @State private var levelCounts: [LogLevel: Int] = [:]
+    @State private var searchDebounceTask: Task<Void, Never>?
 
-    private var filteredLogs: [LogEntry] {
-        state.logs.filter { entry in
+    private func recomputeLogCache() {
+        let query = debouncedSearchKeyword.trimmingCharacters(in: .whitespaces).lowercased()
+        filteredLogs = logsStore.logs.filter { entry in
             let matchesLevel = (selectedLevel == .all) || (entry.level == selectedLevel)
-            let query = searchKeyword.trimmingCharacters(in: .whitespaces).lowercased()
-            let matchesQuery = query.isEmpty || entry.message.lowercased().contains(query) || entry.source.lowercased().contains(query) || (entry.detail?.lowercased().contains(query) ?? false)
+            let matchesQuery = query.isEmpty
+                || entry.message.lowercased().contains(query)
+                || entry.source.lowercased().contains(query)
+                || (entry.detail?.lowercased().contains(query) ?? false)
             return matchesLevel && matchesQuery
         }
+        var counts: [LogLevel: Int] = [.all: logsStore.logs.count]
+        for lvl in LogLevel.allCases where lvl != .all {
+            counts[lvl] = logsStore.logs.filter { $0.level == lvl }.count
+        }
+        levelCounts = counts
     }
 
     var body: some View {
@@ -5386,7 +5678,7 @@ struct LogsView: View {
                         // Level Filter Chips
                         HStack(spacing: 8) {
                             ForEach(LogLevel.allCases, id: \.self) { lvl in
-                                let count = countFor(lvl)
+                                let count = levelCounts[lvl] ?? 0
                                 Button {
                                     selectedLevel = lvl
                                 } label: {
@@ -5473,11 +5765,20 @@ struct LogsView: View {
             }
             .padding(22)
         }
-    }
-
-    private func countFor(_ lvl: LogLevel) -> Int {
-        if lvl == .all { return state.logs.count }
-        return state.logs.filter { $0.level == lvl }.count
+        .onAppear { recomputeLogCache() }
+        .onReceive(logsStore.$logs) { _ in recomputeLogCache() }
+        .onChange(of: selectedLevel) { _, _ in recomputeLogCache() }
+        .onChange(of: debouncedSearchKeyword) { _, _ in recomputeLogCache() }
+        .onChange(of: searchKeyword) { _, newValue in
+            searchDebounceTask?.cancel()
+            searchDebounceTask = Task {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    debouncedSearchKeyword = newValue
+                }
+            }
+        }
     }
 }
 
