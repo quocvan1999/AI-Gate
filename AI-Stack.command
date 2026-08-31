@@ -25,11 +25,15 @@ LOG_DIR="$APP_DIR/logs"
 
 PROXY_PORT=8318
 ROUTER_PORT=20128
+# Cursor Agent uses /v1/responses; 9Router often returns empty output there.
+# Funnel points at this shim; Codex stays on ROUTER_PORT (chat/completions).
+CURSOR_SHIM_PORT=20129
 NODE_REQUIRED="20.20.2"
 NINE_REQUIRED="0.5.55"
 
 PROXY_LOG="$LOG_DIR/agentrouter-proxy.log"
 ROUTER_LOG="$LOG_DIR/9router.log"
+CURSOR_SHIM_LOG="$LOG_DIR/cursor-responses-shim.log"
 BRIDGE_DIR="$APP_DIR/cursor-bridge"
 BRIDGE_STATUS="$BRIDGE_DIR/status.json"
 BRIDGE_DESIRED="$BRIDGE_DIR/desired.json"
@@ -39,6 +43,7 @@ BRIDGE_LOG="$LOG_DIR/cursor-bridge.log"
 MANAGER_DIR="$(cd "$(dirname "$0")" && pwd)"
 CURSOR_APPLY_PY=""
 CURSOR_HEALTH_PY=""
+CODEX_APPLY_PY=""
 if [[ -f "$MANAGER_DIR/cursor_apply_config.py" ]]; then
   CURSOR_APPLY_PY="$MANAGER_DIR/cursor_apply_config.py"
 elif [[ -f "$MANAGER_DIR/Assets/cursor_apply_config.py" ]]; then
@@ -53,8 +58,99 @@ elif [[ -f "$MANAGER_DIR/Assets/cursor_path_health.py" ]]; then
 elif [[ -f "$MANAGER_DIR/../Assets/cursor_path_health.py" ]]; then
   CURSOR_HEALTH_PY="$(cd "$MANAGER_DIR/.." && pwd)/Assets/cursor_path_health.py"
 fi
+if [[ -f "$MANAGER_DIR/codex_apply_config.py" ]]; then
+  CODEX_APPLY_PY="$MANAGER_DIR/codex_apply_config.py"
+elif [[ -f "$MANAGER_DIR/Assets/codex_apply_config.py" ]]; then
+  CODEX_APPLY_PY="$MANAGER_DIR/Assets/codex_apply_config.py"
+elif [[ -f "$MANAGER_DIR/../Assets/codex_apply_config.py" ]]; then
+  CODEX_APPLY_PY="$(cd "$MANAGER_DIR/.." && pwd)/Assets/codex_apply_config.py"
+fi
+CODEX_TEST_PY=""
+if [[ -f "$MANAGER_DIR/codex_test.py" ]]; then
+  CODEX_TEST_PY="$MANAGER_DIR/codex_test.py"
+elif [[ -f "$MANAGER_DIR/Assets/codex_test.py" ]]; then
+  CODEX_TEST_PY="$MANAGER_DIR/Assets/codex_test.py"
+elif [[ -f "$MANAGER_DIR/../Assets/codex_test.py" ]]; then
+  CODEX_TEST_PY="$(cd "$MANAGER_DIR/.." && pwd)/Assets/codex_test.py"
+fi
+CURSOR_TEST_PY=""
+if [[ -f "$MANAGER_DIR/cursor_test.py" ]]; then
+  CURSOR_TEST_PY="$MANAGER_DIR/cursor_test.py"
+elif [[ -f "$MANAGER_DIR/Assets/cursor_test.py" ]]; then
+  CURSOR_TEST_PY="$MANAGER_DIR/Assets/cursor_test.py"
+elif [[ -f "$MANAGER_DIR/../Assets/cursor_test.py" ]]; then
+  CURSOR_TEST_PY="$(cd "$MANAGER_DIR/.." && pwd)/Assets/cursor_test.py"
+fi
+CURSOR_SHIM_PY=""
+if [[ -f "$MANAGER_DIR/cursor_responses_shim.py" ]]; then
+  CURSOR_SHIM_PY="$MANAGER_DIR/cursor_responses_shim.py"
+elif [[ -f "$MANAGER_DIR/Assets/cursor_responses_shim.py" ]]; then
+  CURSOR_SHIM_PY="$MANAGER_DIR/Assets/cursor_responses_shim.py"
+elif [[ -f "$MANAGER_DIR/../Assets/cursor_responses_shim.py" ]]; then
+  CURSOR_SHIM_PY="$(cd "$MANAGER_DIR/.." && pwd)/Assets/cursor_responses_shim.py"
+fi
 
 mkdir -p "$LOG_DIR" "$BRIDGE_DIR"
+
+start_cursor_shim() {
+    if [[ -z "$CURSOR_SHIM_PY" || ! -f "$CURSOR_SHIM_PY" ]]; then
+        warn "Thiếu cursor_responses_shim.py — Cursor Agent /v1/responses có thể trống."
+        return 1
+    fi
+    if listening "$CURSOR_SHIM_PORT"; then
+        return 0
+    fi
+    mkdir -p "$LOG_DIR"
+    {
+        print -r -- "---- $(date) start_cursor_shim ----"
+        print -r -- "listen=:$CURSOR_SHIM_PORT upstream=http://127.0.0.1:$ROUTER_PORT"
+    } >>"$CURSOR_SHIM_LOG" 2>&1
+    nohup /usr/bin/python3 "$CURSOR_SHIM_PY" \
+        --listen "$CURSOR_SHIM_PORT" \
+        --upstream "http://127.0.0.1:$ROUTER_PORT" \
+        >>"$CURSOR_SHIM_LOG" 2>&1 </dev/null &
+    local i
+    for i in {1..20}; do
+        if listening "$CURSOR_SHIM_PORT"; then
+            return 0
+        fi
+        sleep 0.15
+    done
+    fail "Cursor Responses shim không listen trên :$CURSOR_SHIM_PORT"
+    return 1
+}
+
+stop_cursor_shim() {
+    pkill -f "cursor_responses_shim.py" 2>/dev/null || true
+    if listening "$CURSOR_SHIM_PORT"; then
+        stop_port_force "$CURSOR_SHIM_PORT" "Cursor Responses Shim" >/dev/null 2>&1 || true
+    fi
+}
+
+# Funnel must proxy to responses shim (:20129), not 9Router (:20128) directly.
+# Direct :20128 makes /v1/responses return chat.completion JSON → Cursor Agent Network Error.
+funnel_targets_shim() {
+    local ts="${1:-}"
+    [[ -n "$ts" ]] || return 1
+    local st
+    st="$("$ts" funnel status 2>/dev/null || true)"
+    print -- "$st" | grep -qE "127\.0\.0\.1:${CURSOR_SHIM_PORT}|:${CURSOR_SHIM_PORT}([^0-9]|$)"
+}
+
+ensure_funnel_shim() {
+    local ts="${1:-}"
+    [[ -n "$ts" ]] || return 1
+    if funnel_targets_shim "$ts"; then
+        return 0
+    fi
+    {
+        print -r -- "---- $(date) ensure_funnel_shim: Funnel not on :$CURSOR_SHIM_PORT, reconfiguring ----"
+        "$ts" funnel reset 2>&1 || true
+        "$ts" funnel --bg "http://127.0.0.1:$CURSOR_SHIM_PORT" 2>&1 || true
+    } >>"$BRIDGE_LOG" 2>&1
+    sleep 1
+    funnel_targets_shim "$ts"
+}
 
 cursor_apply_config() {
     local model="${1:-my-combo}"
@@ -65,13 +161,53 @@ cursor_apply_config() {
     /usr/bin/python3 "$CURSOR_APPLY_PY" --model "$model" 2>>"$BRIDGE_LOG"
 }
 
+# Warm Funnel + combo trước khi user chat — giảm cold-start vượt Cursor ~20s timeout.
+cursor_warmup() {
+    local model="${1:-my-combo}"
+    if [[ -z "$CURSOR_TEST_PY" || ! -f "$CURSOR_TEST_PY" ]]; then
+        return 0
+    fi
+    {
+        print -r -- "---- $(date) cursor_warmup model=$model ----"
+        /usr/bin/python3 "$CURSOR_TEST_PY" --model "$model" 2>&1 || true
+    } >>"$BRIDGE_LOG" 2>&1
+}
+
 cursor_path_health() {
     local model="${1:-my-combo}"
+    shift || true
     if [[ -z "$CURSOR_HEALTH_PY" || ! -f "$CURSOR_HEALTH_PY" ]]; then
         print '{"localRouter":false,"message":"Thiếu cursor_path_health.py","cursorPathOk":false}'
         return 1
     fi
-    /usr/bin/python3 "$CURSOR_HEALTH_PY" --model "$model" 2>/dev/null
+    /usr/bin/python3 "$CURSOR_HEALTH_PY" --model "$model" "$@" 2>/dev/null
+}
+
+codex_apply_config() {
+    local model="${1:-my-combo}"
+    if [[ -z "$CODEX_APPLY_PY" || ! -f "$CODEX_APPLY_PY" ]]; then
+        print '{"ok":false,"message":"Thiếu codex_apply_config.py trong Resources"}'
+        return 1
+    fi
+    /usr/bin/python3 "$CODEX_APPLY_PY" --model "$model" 2>>"$BRIDGE_LOG"
+}
+
+codex_test() {
+    local model="${1:-my-combo}"
+    if [[ -z "$CODEX_TEST_PY" || ! -f "$CODEX_TEST_PY" ]]; then
+        print '{"ok":false,"message":"Thiếu codex_test.py trong Resources","latencyMs":0}'
+        return 1
+    fi
+    /usr/bin/python3 "$CODEX_TEST_PY" --model "$model" 2>/dev/null
+}
+
+cursor_test() {
+    local model="${1:-my-combo}"
+    if [[ -z "$CURSOR_TEST_PY" || ! -f "$CURSOR_TEST_PY" ]]; then
+        print '{"ok":false,"message":"Thiếu cursor_test.py trong Resources","latencyMs":0}'
+        return 1
+    fi
+    /usr/bin/python3 "$CURSOR_TEST_PY" --model "$model" 2>/dev/null
 }
 
 # ---------- terminal UI ----------
@@ -342,7 +478,7 @@ EOF
         else
             warn "Cài bằng hộp thoại mật khẩu chưa thành công — chuyển sang mở Installer .pkg"
             {
-                print "---- $(date) osascript brew install failed ----"
+                print -r -- "---- $(date) osascript brew install failed ----"
             } >>"$BRIDGE_LOG" 2>&1
         fi
     fi
@@ -373,7 +509,7 @@ EOF
         open "$pkg" >/dev/null 2>&1 || true
     else
         warn "Không lấy được .pkg — mở trang tải chính thức."
-        write_bridge_status false false false "" "Mở trang tải Tailscale. Cài xong rồi quay lại Continue Setup."
+        write_bridge_status false false false "" "Mở trang tải Tailscale. Cài xong rồi bật lại «Dùng với Cursor» ở Overview."
         open "https://tailscale.com/download/mac" >/dev/null 2>&1 || true
     fi
 
@@ -397,8 +533,8 @@ EOF
         (( i++ ))
     done
 
-    fail "Chưa thấy Tailscale sau khi mở Installer. Cài xong trong Applications rồi bấm Continue Setup."
-    write_bridge_status false false false "" "Chưa cài xong Tailscale. Hoàn tất Installer rồi bấm Continue Setup."
+    fail "Chưa thấy Tailscale sau khi mở Installer. Cài xong trong Applications rồi bật lại toggle ở Overview."
+    write_bridge_status false false false "" "Chưa cài xong Tailscale. Hoàn tất Installer rồi bật lại toggle ở Overview."
     return 1
 }
 
@@ -416,7 +552,7 @@ bridge_setup() {
         if [[ -x "/Applications/Tailscale.app/Contents/MacOS/Tailscale" ]]; then
             ts="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
         else
-            write_bridge_status false false false "" "Đã có app nhưng chưa thấy CLI. Mở Tailscale một lần rồi Continue Setup."
+            write_bridge_status false false false "" "Đã có app nhưng chưa thấy CLI. Mở Tailscale một lần rồi bật lại toggle ở Overview."
             open -a Tailscale >/dev/null 2>&1 || true
             fail "Không tìm thấy Tailscale CLI."
             return 1
@@ -447,13 +583,13 @@ bridge_setup() {
     done
 
     if [[ "$backend_state" != "Running" ]]; then
-        write_bridge_status true false false "" "Chưa login xong. Log in trong Tailscale, rồi bấm Continue Setup."
+        write_bridge_status true false false "" "Chưa login xong. Log in trong Tailscale, rồi bật lại «Dùng với Cursor» ở Overview."
         fail "Chưa login Tailscale."
         open -a Tailscale >/dev/null 2>&1 || true
         return 1
     fi
 
-    info "Bước 4/4 — Bật Funnel → 9Router :$ROUTER_PORT"
+    info "Bước 4/4 — Bật Funnel → Cursor shim :$CURSOR_SHIM_PORT → 9Router"
     if ! router_healthy_quiet; then
         start_router_quiet >/dev/null 2>&1 || true
     fi
@@ -467,8 +603,8 @@ bridge_setup() {
     open "https://login.tailscale.com/admin/dns" >/dev/null 2>&1 || true
     sleep 1
     open "https://login.tailscale.com/admin/acls" >/dev/null 2>&1 || true
-    write_bridge_status true true false "" "Đã login. Trong trang Admin vừa mở: bật HTTPS Certificates + Funnel, rồi bấm Continue Setup."
-    fail "Funnel chưa active — hoàn tất Admin rồi Continue Setup."
+    write_bridge_status true true false "" "Đã login. Trong Admin vừa mở: bật HTTPS + Funnel, rồi bật lại toggle ở Overview."
+    fail "Funnel chưa active — hoàn tất Admin rồi bật lại toggle ở Overview."
     return 1
 }
 
@@ -785,7 +921,7 @@ write_bridge_status() {
   "autoHeal": ${auto_heal},
   "publicUrl": "$(json_escape "$public_url")",
   "baseUrl": "$(json_escape "$base_url")",
-  "targetPort": ${ROUTER_PORT},
+  "targetPort": ${CURSOR_SHIM_PORT},
   "message": "$(json_escape "$message")",
   "lastHealAt": "$(json_escape "$last_heal")",
   "updatedAt": "${now}"
@@ -947,8 +1083,7 @@ bridge_refresh_status() {
         local st
         st="$("$ts" funnel status 2>/dev/null || true)"
         if print -- "$st" | grep -qiE 'Funnel on|https://|AllowFunnel|Proxy'; then
-            # Confirm handler points at our router port when possible
-            if print -- "$st" | grep -q "$ROUTER_PORT" || [[ -n "$public_url" ]]; then
+            if print -- "$st" | grep -qE "$CURSOR_SHIM_PORT|$ROUTER_PORT" || [[ -n "$public_url" ]]; then
                 funnel_on=true
             fi
         fi
@@ -965,15 +1100,36 @@ bridge_refresh_status() {
         if [[ "$(bridge_desired_get autoHeal true)" == "true" && "$(bridge_desired_get wanted false)" == "true" ]]; then
             heal_note=" Auto-heal Funnel: ON."
         fi
-        write_bridge_status true true true "$public_url" "Cursor Bridge sẵn sàng. Dán Base URL + API Key vào Cursor.${heal_note}"
+        write_bridge_status true true true "$public_url" "Sẵn sàng cho Cursor. Bật/tắt ở Overview nếu cần.${heal_note}"
         return 0
     fi
 
     if [[ "$(bridge_desired_get wanted false)" == "true" ]]; then
-        write_bridge_status true true false "${public_url}" "Funnel đang tắt nhưng vẫn muốn bật — auto-heal sẽ thử khôi phục."
+        write_bridge_status true true false "${public_url}" "Tunnel chưa lên — đang thử tự khôi phục Funnel…"
     else
-        write_bridge_status true true false "${public_url}" "Tailscale đã login. Bấm Enable Bridge để bật Funnel (HTTPS cố định)."
+        write_bridge_status true true false "${public_url}" "Tailscale đã login. Bật «Dùng với Cursor» ở Overview để mở tunnel."
     fi
+    return 1
+}
+
+# Ensure Tailscale backend is Running (app may be installed but Stopped).
+ensure_tailscale_running() {
+    local ts="$1"
+    local backend_state
+    backend_state="$("$ts" status --json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print((d.get("BackendState") or ""))' 2>/dev/null || true)"
+    if [[ "$backend_state" == "Running" ]]; then
+        return 0
+    fi
+
+    open -a Tailscale >/dev/null 2>&1 || true
+    local i
+    for i in {1..20}; do
+        sleep 1
+        backend_state="$("$ts" status --json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print((d.get("BackendState") or ""))' 2>/dev/null || true)"
+        if [[ "$backend_state" == "Running" ]]; then
+            return 0
+        fi
+    done
     return 1
 }
 
@@ -991,16 +1147,18 @@ start_bridge_quiet() {
         return 1
     fi
 
-    local backend_state
-    backend_state="$("$ts" status --json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print((d.get("BackendState") or ""))' 2>/dev/null || true)"
-    if [[ "$backend_state" != "Running" ]]; then
+    if ! ensure_tailscale_running "$ts"; then
+        {
+            print -r -- "---- $(date) start_bridge_quiet: Tailscale still not Running ----"
+        } >>"$BRIDGE_LOG" 2>&1
         return 1
     fi
 
+    start_cursor_shim >>"$BRIDGE_LOG" 2>&1 || return 1
+
     {
-        print "---- $(date) start_bridge_quiet (auto-heal) ----"
-        "$ts" funnel --bg "$ROUTER_PORT" 2>&1 || true
-        "$ts" funnel --bg "http://127.0.0.1:$ROUTER_PORT" 2>&1 || true
+        print -r -- "---- $(date) start_bridge_quiet (auto-heal) ----"
+        ensure_funnel_shim "$ts" 2>&1 || true
     } >>"$BRIDGE_LOG" 2>&1
 
     sleep 1
@@ -1015,68 +1173,75 @@ start_bridge_quiet() {
 start_bridge() {
     section "CURSOR BRIDGE (Tailscale Funnel)"
 
+    # Mark intent immediately so status/auto-heal match Overview toggle ON.
+    bridge_desired_set "true" "" ""
+
     if ! router_healthy_quiet; then
         warn "9Router chưa READY — thử start router trước."
         start_router_quiet >/dev/null 2>&1 || true
     fi
     if ! router_healthy_quiet; then
-        write_bridge_status true false false "" "Không thể bật Bridge vì 9Router (:$ROUTER_PORT) chưa READY."
+        write_bridge_status true false false "" "Không thể bật Cursor vì 9Router (:$ROUTER_PORT) chưa READY. Bấm Start trên Overview."
         fail "9Router chưa READY."
         return 1
     fi
 
     local ts=""
     if ! ts="$(find_tailscale)"; then
-        write_bridge_status false false false "" "Chưa cài Tailscale. Cài: brew install --cask tailscale"
+        write_bridge_status false false false "" "Chưa cài Tailscale. Bật lại «Dùng với Cursor» ở Overview để tự cài."
         fail "Tailscale chưa được cài."
         return 1
     fi
 
-    local backend_state
-    backend_state="$("$ts" status --json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print((d.get("BackendState") or ""))' 2>/dev/null || true)"
-    if [[ "$backend_state" != "Running" ]]; then
-        write_bridge_status true false false "" "Tailscale chưa Running (state=${backend_state:-unknown}). Mở app Tailscale và đăng nhập."
+    info "Đảm bảo Tailscale đang Running…"
+    if ! ensure_tailscale_running "$ts"; then
+        write_bridge_status true false false "" "Tailscale chưa Running. Mở app Tailscale → Log in / Allow VPN, rồi bật lại toggle."
         fail "Tailscale chưa đăng nhập / chưa Running."
         return 1
     fi
 
-    info "Enabling Tailscale Funnel → 127.0.0.1:$ROUTER_PORT"
+    info "Starting Cursor Responses shim :$CURSOR_SHIM_PORT"
+    if ! start_cursor_shim; then
+        write_bridge_status true true false "" "Không start được Cursor Responses shim (:$CURSOR_SHIM_PORT)."
+        fail "Cursor Responses shim chưa READY."
+        return 1
+    fi
+
+    info "Enabling Tailscale Funnel → 127.0.0.1:$CURSOR_SHIM_PORT (→ 9Router :$ROUTER_PORT)"
     {
-        print "---- $(date) start_bridge ----"
-        "$ts" funnel --bg "$ROUTER_PORT" 2>&1 || true
-        # Some builds prefer explicit proxy URL
-        "$ts" funnel --bg "http://127.0.0.1:$ROUTER_PORT" 2>&1 || true
+        print -r -- "---- $(date) start_bridge ----"
+        ensure_funnel_shim "$ts" 2>&1 || true
     } >>"$BRIDGE_LOG" 2>&1
 
     sleep 1
     if bridge_refresh_status; then
-        # Remember user intent so auto-heal can restore after drops / relaunch.
         bridge_desired_set "true" "" "now"
         bridge_refresh_status >/dev/null 2>&1 || true
-        ok "Cursor Bridge READY"
+        ok "Cursor Bridge READY — Funnel → shim :$CURSOR_SHIM_PORT → 9Router :$ROUTER_PORT"
         local base
         base="$(python3 -c "import json; print(json.load(open('$BRIDGE_STATUS')).get('baseUrl',''))" 2>/dev/null || true)"
         [[ -n "$base" ]] && ok "Base URL: $base"
-        # Best-effort: inject Base URL + key + model into Cursor (does not fail Bridge).
         {
-            print "---- $(date) auto cursor_apply after start_bridge ----"
+            print -r -- "---- $(date) auto cursor_apply after start_bridge ----"
             cursor_apply_config "my-combo" || true
+            cursor_warmup "my-combo" || true
         } >>"$BRIDGE_LOG" 2>&1
         return 0
     fi
 
-    # Funnel may need admin enable once: https://login.tailscale.com/admin/acls
-    write_bridge_status true true false "" "Funnel chưa bật. Kiểm tra Tailscale Admin → Enable HTTPS + Funnel, rồi thử lại."
+    write_bridge_status true true false "" "Funnel chưa lên. Mở Tailscale Admin → bật HTTPS + Funnel, rồi bật lại toggle ở Overview."
     fail "Funnel chưa active. Xem $BRIDGE_LOG và bật Funnel trong Tailscale Admin."
     return 1
 }
 
 # Clear Funnel runtime but keep desired.wanted (used on app quit/stop services).
+# Do NOT kill the responses shim here — multiple AI Gate instances call this on
+# restart; killing shim while Funnel still points at :20129 causes HTTP 502.
 stop_bridge_runtime() {
     local ts=""
     if ts="$(find_tailscale)"; then
         {
-            print "---- $(date) stop_bridge_runtime ----"
+            print -r -- "---- $(date) stop_bridge_runtime ----"
             "$ts" serve reset 2>&1 || true
             "$ts" funnel reset 2>&1 || true
         } >>"$BRIDGE_LOG" 2>&1
@@ -1096,6 +1261,8 @@ stop_bridge() {
     else
         warn "Không tìm thấy Tailscale CLI — bỏ qua reset Funnel."
     fi
+    stop_cursor_shim
+    ok "Đã tắt Cursor Responses shim."
     bridge_refresh_status >/dev/null 2>&1 || true
 }
 
@@ -1108,23 +1275,42 @@ bridge_autoheal_tick() {
     [[ "$(bridge_desired_get wanted false)" == "true" ]] || return 0
     [[ "$(bridge_desired_get autoHeal true)" == "true" ]] || return 0
 
-    if bridge_healthy_quiet; then
+    # Keep responses shim alive — Funnel points here; if shim dies Cursor gets 502
+    # and topology never lights (same symptom as Funnel-off).
+    if ! listening "$CURSOR_SHIM_PORT"; then
+        {
+            print -r -- "---- $(date) bridge_autoheal_tick: shim down, restarting ----"
+        } >>"$BRIDGE_LOG" 2>&1
+        start_cursor_shim >>"$BRIDGE_LOG" 2>&1 || true
+    fi
+
+    if bridge_healthy_quiet && listening "$CURSOR_SHIM_PORT"; then
+        local ts=""
+        if ts="$(find_tailscale)"; then
+            if ! funnel_targets_shim "$ts"; then
+                {
+                    print -r -- "---- $(date) bridge_autoheal_tick: Funnel on wrong port, fixing ----"
+                } >>"$BRIDGE_LOG" 2>&1
+                ensure_funnel_shim "$ts" >>"$BRIDGE_LOG" 2>&1 || true
+                bridge_refresh_status >/dev/null 2>&1 || true
+            fi
+        fi
         return 0
     fi
 
     {
-        print "---- $(date) bridge_autoheal_tick: Funnel down, attempting restore ----"
+        print -r -- "---- $(date) bridge_autoheal_tick: Funnel/shim down, attempting restore ----"
     } >>"$BRIDGE_LOG" 2>&1
 
     if start_bridge_quiet; then
         {
-            print "---- $(date) bridge_autoheal_tick: restore OK ----"
+            print -r -- "---- $(date) bridge_autoheal_tick: restore OK ----"
         } >>"$BRIDGE_LOG" 2>&1
         return 0
     fi
 
     {
-        print "---- $(date) bridge_autoheal_tick: restore failed ----"
+        print -r -- "---- $(date) bridge_autoheal_tick: restore failed ----"
     } >>"$BRIDGE_LOG" 2>&1
     return 1
 }
@@ -1273,16 +1459,18 @@ stop_all() {
     stop_autoheal
     # Temporary Funnel stop — keep wanted so Enable intent survives relaunch.
     stop_bridge_runtime >/dev/null 2>&1 || true
+    pkill -9 -f "cursor_responses_shim.py" 2>/dev/null || true
     pkill -9 -f "agentrouter-proxy" 2>/dev/null || true
     pkill -9 -f "9router" 2>/dev/null || true
+    stop_port_force "$CURSOR_SHIM_PORT" "Cursor Responses Shim"
     stop_port_force "$PROXY_PORT" "AgentRouter Proxy"
     stop_port_force "$ROUTER_PORT" "9Router"
 
     print ""
-    if ! listening "$PROXY_PORT" && ! listening "$ROUTER_PORT"; then
+    if ! listening "$PROXY_PORT" && ! listening "$ROUTER_PORT" && ! listening "$CURSOR_SHIM_PORT"; then
         ok "AI Stack đã STOP hoàn toàn."
     else
-        warn "Vẫn còn process trên một trong hai port."
+        warn "Vẫn còn process trên một trong các port."
     fi
 }
 
@@ -1406,10 +1594,12 @@ if [[ "${1:-}" == "--shutdown" ]]; then
     pgrep -f "AI-Stack.command.*--background" | grep -v "^${current_pid}$" | xargs kill -9 2>/dev/null || true
     pgrep -f "AI-Stack.command.*--restart" | grep -v "^${current_pid}$" | xargs kill -9 2>/dev/null || true
     pkill -9 -f "autoheal_loop" 2>/dev/null || true
+    pkill -9 -f "cursor_responses_shim.py" 2>/dev/null || true
     pkill -9 -f "agentrouter-proxy" 2>/dev/null || true
     pkill -9 -f "9router" 2>/dev/null || true
     # 9Router may leave a next-server child on :20128
     pkill -9 -f "next-server" 2>/dev/null || true
+    stop_port_force "$CURSOR_SHIM_PORT" "Cursor Responses Shim" >/dev/null 2>&1 || true
     stop_port_force "$PROXY_PORT" "AgentRouter Proxy" >/dev/null 2>&1 || true
     stop_port_force "$ROUTER_PORT" "9Router" >/dev/null 2>&1 || true
     # Final Funnel/Serve sweep in case Tailscale raced.
@@ -1428,7 +1618,7 @@ if [[ "${1:-}" == "--bridge-status" ]]; then
     if [[ -f "$BRIDGE_STATUS" ]]; then
         cat "$BRIDGE_STATUS"
     else
-        print '{"installed":false,"loggedIn":false,"funnelEnabled":false,"wanted":false,"autoHeal":true,"publicUrl":"","baseUrl":"","targetPort":20128,"message":"No status","lastHealAt":"","updatedAt":""}'
+        print '{"installed":false,"loggedIn":false,"funnelEnabled":false,"wanted":false,"autoHeal":true,"publicUrl":"","baseUrl":"","targetPort":20129,"message":"No status","lastHealAt":"","updatedAt":""}'
     fi
     exit 0
 fi
@@ -1483,15 +1673,73 @@ if [[ "${1:-}" == "--cursor-apply" ]]; then
     exit $?
 fi
 
-if [[ "${1:-}" == "--bridge-health" ]]; then
+if [[ "${1:-}" == "--codex-apply" ]]; then
     model="my-combo"
     if [[ "${2:-}" == "--model" && -n "${3:-}" ]]; then
         model="$3"
     elif [[ -n "${2:-}" && "${2:-}" != --* ]]; then
         model="$2"
     fi
-    bridge_refresh_status >/dev/null 2>&1 || true
-    cursor_path_health "$model"
+    codex_apply_config "$model"
+    exit $?
+fi
+
+if [[ "${1:-}" == "--codex-test" ]]; then
+    model="my-combo"
+    if [[ "${2:-}" == "--model" && -n "${3:-}" ]]; then
+        model="$3"
+    elif [[ -n "${2:-}" && "${2:-}" != --* ]]; then
+        model="$2"
+    fi
+    codex_test "$model"
+    exit $?
+fi
+
+if [[ "${1:-}" == "--cursor-test" ]]; then
+    model="my-combo"
+    if [[ "${2:-}" == "--model" && -n "${3:-}" ]]; then
+        model="$3"
+    elif [[ -n "${2:-}" && "${2:-}" != --* ]]; then
+        model="$2"
+    fi
+    cursor_test "$model"
+    exit $?
+fi
+
+if [[ "${1:-}" == "--bridge-health" ]]; then
+    model="my-combo"
+    extra=()
+    shift
+    while [[ $# -gt 0 ]]; do
+        if [[ "$1" == "--model" && -n "${2:-}" ]]; then
+            model="$2"
+            shift 2
+        elif [[ "$1" == "--live" ]]; then
+            extra+=(--live)
+            shift
+        elif [[ "$1" == "--silent" ]]; then
+            extra+=(--silent)
+            shift
+        elif [[ "$1" != --* ]]; then
+            model="$1"
+            shift
+        else
+            shift
+        fi
+    done
+    # Không gọi bridge_refresh_status ở đây — status.json đã được
+    # --bridge-status / autoheal cập nhật. Tránh double Tailscale mỗi lần health.
+    cursor_path_health "$model" "${extra[@]}"
+    exit $?
+fi
+
+# Topology Usage 9Router — cùng logic Python với bridge-health (không probe path).
+if [[ "${1:-}" == "--bridge-topology" ]]; then
+    if [[ -z "$CURSOR_HEALTH_PY" || ! -f "$CURSOR_HEALTH_PY" ]]; then
+        print '{"topologyProviders":[],"topologyActive":0,"topologyCount":0,"message":"Thiếu cursor_path_health.py"}'
+        exit 1
+    fi
+    /usr/bin/python3 "$CURSOR_HEALTH_PY" --topology 2>/dev/null
     exit $?
 fi
 
@@ -1542,8 +1790,10 @@ cleanup_on_exit() {
     trap - EXIT
     stop_autoheal
     stop_bridge_runtime >/dev/null 2>&1 || true
+    pkill -9 -f "cursor_responses_shim.py" 2>/dev/null || true
     pkill -9 -f "agentrouter-proxy" 2>/dev/null || true
     pkill -9 -f "9router" 2>/dev/null || true
+    stop_port_force "$CURSOR_SHIM_PORT" "Cursor Responses Shim" >/dev/null 2>&1 || true
     stop_port_force "$PROXY_PORT" "AgentRouter Proxy" >/dev/null 2>&1 || true
     stop_port_force "$ROUTER_PORT" "9Router" >/dev/null 2>&1 || true
     exit "$code"

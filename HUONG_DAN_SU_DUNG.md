@@ -16,19 +16,21 @@ _(Hoặc mở Terminal, gõ `cd ` rồi kéo thả thư mục dự án vào cử
 
 ---
 
-## 🔗 CURSOR BRIDGE — AUTO SETUP & TRẠNG THÁI
+## 🔗 CURSOR — AUTO SETUP & TRẠNG THÁI
 
-1. Trong AI Gate → **Cursor Bridge** → **Enable Bridge** (hoặc Continue Setup).
-2. App tự bật Tailscale Funnel và **Apply to Cursor** (ghi Base URL + API key 9Router + model vào Cursor). Cursor sẽ được quit/reopen một lần.
-3. Tab Overview / Cursor Bridge hiện checklist tách **Local** (Codex/`localhost`) vs **Cursor path** (Funnel public + Cursor config + combo providers). Banner chỉ “Operational” đủ khi cả hai ổn (nếu Bridge đang bật).
-4. Nút **Test Cursor path** / **Apply to Cursor** dùng khi Funnel URL đổi hoặc Cursor lệch cấu hình.
-5. **Quit AI Gate** hoặc nút **Stop**: tắt hết Funnel + 9Router + proxies + auto-heal (không tự bật lại cho đến khi Start / Enable Bridge).
+1. Trên **Overview** → **Active Services** → bật toggle **Cursor**. App tự: Tailscale/Funnel + Apply cấu hình vào Cursor.
+2. Trên hàng **Cursor**: **Test** (Funnel + chat ping), **Info** (checklist / Base URL / API key / ghi lại config) — không còn tab riêng trên sidebar.
+3. Trong **Active Services**: **Cursor** (Funnel + combo) và **Codex** (local + combo) — đổi combo riêng từng service.
+4. **Combo & Vision Adapter** trên Overview chỉ để **xem** model con + trạng thái; chọn combo ở đây không apply.
+5. Tắt toggle Cursor = chỉ tắt Funnel/Cursor path; 9Router/Codex local vẫn chạy.
+6. **Quit / Stop** app: tắt hết Funnel + 9Router + proxies.
 
 Lệnh thủ công:
 
 ```zsh
 ./AI-Stack.command --bridge-health --model my-combo
 ./AI-Stack.command --cursor-apply --model my-combo
+./AI-Stack.command --cursor-test --model my-combo
 ```
 
 ---

@@ -24,14 +24,16 @@ xcrun swiftc -target arm64-apple-macos14.0 -parse-as-library "$ROOT/AIStackApp.s
   -o "$TMP_DIR/AIStackApp_arm64" \
   -framework SwiftUI \
   -framework AppKit \
-  -framework Foundation -O
+  -framework Foundation \
+  -framework CryptoKit -O
 
 echo "🔨 Compiling for Intel Macs (x86_64)..."
 xcrun swiftc -target x86_64-apple-macos14.0 -parse-as-library "$ROOT/AIStackApp.swift" \
   -o "$TMP_DIR/AIStackApp_x86_64" \
   -framework SwiftUI \
   -framework AppKit \
-  -framework Foundation -O
+  -framework Foundation \
+  -framework CryptoKit -O
 
 echo "🔗 Combining into Universal 2 Binary (lipo)..."
 lipo -create "$TMP_DIR/AIStackApp_arm64" "$TMP_DIR/AIStackApp_x86_64" -output "$MACOS/AIStackApp"
@@ -49,7 +51,12 @@ cp "$ROOT/Assets/AppIcon.icns" "$RES/AppIcon.icns"
 cp "$ROOT/Assets/AppIcon.png" "$RES/AppIcon.png"
 cp "$ROOT/Assets/NavIcon.png" "$RES/NavIcon.png"
 cp "$ROOT/Assets/cursor_apply_config.py" "$RES/cursor_apply_config.py"
+cp "$ROOT/Assets/cursor_repair_after_quit.py" "$RES/cursor_repair_after_quit.py"
 cp "$ROOT/Assets/cursor_path_health.py" "$RES/cursor_path_health.py"
+cp "$ROOT/Assets/codex_apply_config.py" "$RES/codex_apply_config.py"
+cp "$ROOT/Assets/codex_test.py" "$RES/codex_test.py"
+cp "$ROOT/Assets/cursor_test.py" "$RES/cursor_test.py"
+cp "$ROOT/Assets/cursor_responses_shim.py" "$RES/cursor_responses_shim.py"
 
 echo "🔏 Code signing (ad-hoc)..."
 codesign --force --deep --sign - "$APP"

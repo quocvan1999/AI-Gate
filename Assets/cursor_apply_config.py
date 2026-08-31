@@ -60,47 +60,95 @@ def cursor_db_path() -> Path:
     )
 
 
+def _port_listening(port: int, host: str = "127.0.0.1") -> bool:
+    """Check if a TCP port is listening locally."""
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+CURSOR_SHIM_BASE = "http://127.0.0.1:20129/v1"
+
+
 def read_bridge_base_url(explicit: str) -> str:
     if explicit:
         return explicit.rstrip("/")
+    # Cursor Agent routes via Cursor cloud — needs public HTTPS Funnel URL, not localhost.
     path = bridge_status_path()
-    if not path.exists():
-        return ""
-    try:
-        data = json.loads(path.read_text())
-        return str(data.get("baseUrl") or "").rstrip("/")
-    except Exception:
-        return ""
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+            base = str(data.get("baseUrl") or "").rstrip("/")
+            if base:
+                return base
+        except Exception:
+            pass
+    return ""
 
 
-def read_nine_router_key() -> str:
+def read_nine_router_key(explicit: str = "") -> str:
+    if explicit:
+        return explicit.strip()
     db = home() / ".9router" / "db" / "data.sqlite"
     if not db.exists():
         return ""
+    try:
+        con = sqlite3.connect(str(db))
+        row = con.execute(
+            "SELECT key FROM apiKeys WHERE isActive=1 ORDER BY createdAt ASC LIMIT 1"
+        ).fetchone()
+        con.close()
+        if row and row[0]:
+            return str(row[0])
+    except Exception:
+        pass
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         row = con.execute(
             "SELECT key FROM apiKeys WHERE isActive=1 ORDER BY createdAt ASC LIMIT 1"
         ).fetchone()
         con.close()
-        return (row[0] if row else "") or ""
+        if row and row[0]:
+            return str(row[0])
     except Exception:
-        return ""
+        pass
+    return ""
+
+
+CURSOR_PROC = "/Applications/Cursor.app/Contents/MacOS/Cursor"
 
 
 def cursor_running() -> bool:
+    """pgrep -x misses Cursor (helper processes / sandbox), and a false negative
+    makes us patch state.vscdb while Cursor is live — it then overwrites us."""
+    try:
+        r = subprocess.run(["ps", "-A", "-o", "comm="], capture_output=True, text=True)
+        if r.returncode == 0:
+            for line in r.stdout.splitlines():
+                if line.strip() == CURSOR_PROC:
+                    return True
+    except Exception:
+        pass
     try:
         r = subprocess.run(
-            ["pgrep", "-x", "Cursor"],
+            ["osascript", "-e", 'application "Cursor" is running'],
             capture_output=True,
             text=True,
         )
-        return r.returncode == 0
+        if r.returncode == 0 and r.stdout.strip().lower() == "true":
+            return True
+    except Exception:
+        pass
+    try:
+        return subprocess.run(["pgrep", "-x", "Cursor"], capture_output=True).returncode == 0
     except Exception:
         return False
 
 
-def quit_cursor(timeout_s: float = 12.0) -> bool:
+def quit_cursor(timeout_s: float = 20.0) -> bool:
     if not cursor_running():
         return True
     subprocess.run(
@@ -108,11 +156,18 @@ def quit_cursor(timeout_s: float = 12.0) -> bool:
         capture_output=True,
         text=True,
     )
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
+    soft_deadline = time.time() + timeout_s * 0.65
+    while time.time() < soft_deadline:
         if not cursor_running():
-            # give DB a moment to flush
-            time.sleep(0.6)
+            time.sleep(1.5)
+            return True
+        time.sleep(0.25)
+    # Graceful quit often blocked by unsaved tabs / Agent tasks — force close.
+    subprocess.run(["killall", "Cursor"], capture_output=True, text=True)
+    hard_deadline = time.time() + 10.0
+    while time.time() < hard_deadline:
+        if not cursor_running():
+            time.sleep(2.0)
             return True
         time.sleep(0.25)
     return not cursor_running()
@@ -136,9 +191,8 @@ def encrypt_electron_secret(plaintext: str) -> Optional[str]:
         return None
     key = pbkdf2_hmac("sha1", password.encode("utf-8"), b"saltysalt", 1003, dklen=16)
     iv = b" " * 16
-    data = plaintext.encode("utf-8")
-    pad_len = 16 - (len(data) % 16)
-    data = data + bytes([pad_len] * pad_len)
+    # Let openssl apply PKCS7 padding. Pre-padding here produced wrong ciphertext
+    # (Cursor could not decrypt; pasting the key in Settings UI still worked).
     proc = subprocess.run(
         [
             "openssl",
@@ -150,13 +204,48 @@ def encrypt_electron_secret(plaintext: str) -> Optional[str]:
             binascii.hexlify(iv).decode(),
             "-nosalt",
         ],
-        input=data,
+        input=plaintext.encode("utf-8"),
         capture_output=True,
     )
     if proc.returncode != 0:
         return None
     blob = b"v10" + proc.stdout
     return json.dumps({"type": "Buffer", "data": list(blob)}, separators=(",", ":"))
+
+
+def decrypt_electron_secret(encrypted_json: str) -> Optional[str]:
+    """Round-trip check for encrypt_electron_secret."""
+    try:
+        from hashlib import pbkdf2_hmac
+        import binascii
+        raw = bytes(json.loads(encrypted_json).get("data") or [])
+        if not raw.startswith(b"v10"):
+            return None
+        password = _keychain_password()
+        if not password:
+            return None
+        key = pbkdf2_hmac("sha1", password.encode("utf-8"), b"saltysalt", 1003, dklen=16)
+        iv = b" " * 16
+        proc = subprocess.run(
+            [
+                "openssl",
+                "enc",
+                "-d",
+                "-aes-128-cbc",
+                "-K",
+                binascii.hexlify(key).decode(),
+                "-iv",
+                binascii.hexlify(iv).decode(),
+                "-nosalt",
+            ],
+            input=raw[3:],
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            return None
+        return proc.stdout.decode("utf-8")
+    except Exception:
+        return None
 
 
 def _keychain_password() -> str:
@@ -182,11 +271,59 @@ def _keychain_password() -> str:
     return ""
 
 
+COMBO_AGENT_MODES = ("composer", "plan-execution", "quick-agent", "deep-search", "spec")
+
+
+def model_catalog_entry(model: str) -> dict:
+    """Mirror what Cursor Settings UI writes when user adds a BYOK model."""
+    return {
+        "name": model,
+        "defaultOn": False,
+        "supportsAgent": True,
+        "degradationStatus": 0,
+        "supportsThinking": True,
+        "supportsImages": True,
+        "supportsMaxMode": True,
+        "supportsNonMaxMode": True,
+        "serverModelName": model,
+        "isRecommendedForBackgroundComposer": False,
+        "supportsPlanMode": True,
+        "supportsSandboxing": True,
+        "isUserAdded": True,
+        "inputboxShortModelName": model,
+        "parameterDefinitions": [],
+        "variants": [],
+        "legacySlugs": [],
+        "idAliases": [],
+        "namedModelSectionIndex": 1,
+        "cloudAgentEffortModes": [],
+        "modelPickerBadges": [],
+    }
+
+
+def ensure_model_catalog(blob: dict, model: str) -> dict:
+    """Register model in availableDefaultModels2 — required for Agent + model picker."""
+    blob = dict(blob)
+    adm = list(blob.get("availableDefaultModels2") or [])
+    entry = model_catalog_entry(model)
+    for i, item in enumerate(adm):
+        if isinstance(item, dict) and item.get("name") == model:
+            merged = dict(item)
+            merged.update(entry)
+            adm[i] = merged
+            blob["availableDefaultModels2"] = adm
+            return blob
+    adm.append(entry)
+    blob["availableDefaultModels2"] = adm
+    return blob
+
+
 def ensure_model_in_blob(blob: dict, model: str, base_url: str) -> dict:
     blob = dict(blob)
     blob["openAIBaseUrl"] = base_url
     blob["useOpenAIKey"] = True
 
+    # Patch aiSettings.modelConfig + register model in catalog (like Cursor Settings UI).
     ai = dict(blob.get("aiSettings") or {})
     uam = [str(x) for x in (ai.get("userAddedModels") or [])]
     moe = [str(x) for x in (ai.get("modelOverrideEnabled") or [])]
@@ -209,11 +346,10 @@ def ensure_model_in_blob(blob: dict, model: str, base_url: str) -> dict:
                 "selectedModels": [{"modelId": "default", "parameters": []}],
             }
             continue
-        if mode in ("composer", "plan-execution", "quick-agent", "deep-search", "spec"):
+        if mode in COMBO_AGENT_MODES:
             entry["modelName"] = model
             entry["selectedModels"] = [{"modelId": model, "parameters": []}]
-            if "maxMode" not in entry:
-                entry["maxMode"] = False
+            entry["maxMode"] = False
             cfg[mode] = entry
 
     ai["userAddedModels"] = uam
@@ -247,19 +383,44 @@ def apply(base_url: str, model: str, api_key: str, relaunch: bool) -> int:
     if was_running and not quit_cursor():
         return out(
             False,
-            message="Không tắt được Cursor để ghi cấu hình. Quit Cursor rồi bấm Apply lại.",
+            message=(
+                "Không tắt được Cursor — chưa ghi được config. "
+                "⌘Q thoát hết cửa sổ Cursor (đóng hộp thoại nếu có), rồi bấm lại."
+            ),
             baseUrl=base_url,
             model=model,
         )
 
+    time.sleep(2.0)  # let Cursor flush state.vscdb after quit
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup = db_path.with_name(f"state.vscdb.aigate-bak-{ts}")
+    # Prune old AI Gate backups — full copy of bloated state.vscdb can be multi-GB each.
     try:
-        shutil.copy2(db_path, backup)
+        for old in db_path.parent.glob("state.vscdb.aigate-bak-*"):
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        for old in db_path.parent.glob("state.vscdb.aigate-local-test-*"):
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+    try:
+        db_size = db_path.stat().st_size if db_path.exists() else 0
+        if db_size > 200 * 1024 * 1024:
+            # Skip multi-hundred-MB file copy; we only patch a few ItemTable keys.
+            backup = None
+        else:
+            shutil.copy2(db_path, backup)
     except Exception as e:
         return out(False, message=f"Không backup state.vscdb: {e}")
 
     encrypted = encrypt_electron_secret(api_key)
+    if encrypted and decrypt_electron_secret(encrypted) != api_key:
+        encrypted = None
     try:
         con = sqlite3.connect(str(db_path))
         row = con.execute(
@@ -275,24 +436,24 @@ def apply(base_url: str, model: str, api_key: str, relaunch: bool) -> int:
             )
         blob = json.loads(row[0])
         blob = ensure_model_in_blob(blob, model, base_url)
+        blob = ensure_model_catalog(blob, model)
         blob_raw = json.dumps(blob, ensure_ascii=False, separators=(",", ":"))
 
         con.execute(
             "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
             (APPLICATION_USER_KEY, blob_raw),
         )
-        con.execute(
-            "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
-            (OPENAI_KEY_PLAIN, api_key),
-        )
         if encrypted:
             con.execute(
                 "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
                 (OPENAI_KEY_SECRET, encrypted),
             )
+            con.execute("DELETE FROM ItemTable WHERE key=?", (OPENAI_KEY_PLAIN,))
         else:
-            # Empty encrypted cell so legacy plaintext may be used on older builds;
-            # modern Cursor needs encryption — warn caller.
+            con.execute(
+                "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
+                (OPENAI_KEY_PLAIN, api_key),
+            )
             empty = json.dumps({"type": "Buffer", "data": []}, separators=(",", ":"))
             con.execute(
                 "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)",
@@ -308,7 +469,7 @@ def apply(base_url: str, model: str, api_key: str, relaunch: bool) -> int:
         relaunch_cursor()
         restarted = True
 
-    msg = "Đã ghi Base URL + model + API key vào Cursor."
+    msg = "Đã ghi Base URL + API key + đăng ký model (giống cấu hình tay trong Cursor Settings)."
     if not encrypted:
         msg += " (Keychain encrypt không sẵn sàng — nếu Cursor không nhận key, mở Settings → Models dán key một lần.)"
     return out(
@@ -317,7 +478,7 @@ def apply(base_url: str, model: str, api_key: str, relaunch: bool) -> int:
         baseUrl=base_url,
         model=model,
         cursorRestarted=restarted,
-        backup=str(backup),
+        backup=str(backup) if backup else "",
         keyEncrypted=bool(encrypted),
     )
 
@@ -325,11 +486,12 @@ def apply(base_url: str, model: str, api_key: str, relaunch: bool) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Apply AI Gate settings into Cursor")
     parser.add_argument("--base-url", default="")
+    parser.add_argument("--api-key", default="")
     parser.add_argument("--model", default="my-combo")
     parser.add_argument("--no-relaunch", action="store_true")
     args = parser.parse_args()
     base = read_bridge_base_url(args.base_url)
-    key = read_nine_router_key()
+    key = read_nine_router_key(args.api_key)
     return apply(base, args.model.strip() or "my-combo", key, relaunch=not args.no_relaunch)
 
 
