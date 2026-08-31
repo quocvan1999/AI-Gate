@@ -126,6 +126,54 @@ struct ProxyConfig: Identifiable, Codable, Hashable {
     var iconName: String = "arrow.triangle.branch"
 }
 
+// MARK: - Design System
+/// Design tokens chuẩn Apple — spacing 4pt base, corner radius, semantic colors.
+/// Dùng xuyên suốt thay vì hardcode từng giá trị.
+enum DS {
+    enum Sp {
+        static let xs: CGFloat = 4
+        static let s: CGFloat = 8
+        static let m: CGFloat = 12
+        static let l: CGFloat = 16
+        static let xl: CGFloat = 20
+        static let xxl: CGFloat = 24
+    }
+
+    enum Rad {
+        static let s: CGFloat = 6
+        static let m: CGFloat = 10
+        static let l: CGFloat = 14
+        static let xl: CGFloat = 18
+    }
+
+    enum C {
+        static let label = Color(nsColor: .labelColor)
+        static let secondaryLabel = Color(nsColor: .secondaryLabelColor)
+        static let tertiaryLabel = Color(nsColor: .tertiaryLabelColor)
+        static let separator = Color(nsColor: .separatorColor)
+        static let windowBackground = Color(nsColor: .windowBackgroundColor)
+        static let controlBackground = Color(nsColor: .controlBackgroundColor)
+        static let underPage = Color(nsColor: .underPageBackgroundColor)
+        /// Màu nhấn duy nhất của app — theo accent người dùng trong System Settings.
+        static let brand = Color(nsColor: .controlAccentColor)
+        static let success = Color(nsColor: .systemGreen)
+        static let warning = Color(nsColor: .systemOrange)
+        static let danger = Color(nsColor: .systemRed)
+        /// Nền canvas cho vùng dữ liệu (biểu đồ / topology).
+        /// Cố định tối — một "bề mặt trực quan hóa" có chủ đích (như Activity Monitor),
+        /// vì các node/đường kẻ trong topology được thiết kế với nét sáng.
+        static let chartSurface = Color(red: 0.07, green: 0.08, blue: 0.10)
+        /// Nền nổi hơn trên canvas (pill node / hub trong topology).
+        static let chartSurfaceElevated = Color(red: 0.14, green: 0.15, blue: 0.17)
+        /// Màu sáng dùng trên nền canvas tối.
+        static let chartOnDarkPrimary = Color.white.opacity(0.92)
+        static let chartOnDarkSecondary = Color.white.opacity(0.55)
+        static let chartOnDarkTertiary = Color.white.opacity(0.35)
+        /// Vàng nhẹ cho giá trị chi phí — giữ độ tương phản trên nền tối.
+        static let chartCost = Color(red: 0.95, green: 0.75, blue: 0.25)
+    }
+}
+
 enum LogLevel: String, Codable, CaseIterable {
     case all = "ALL"
     case info = "INFO"
@@ -3220,7 +3268,7 @@ struct StatusPill: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(color.opacity(0.14))
+        .background(color.opacity(0.12))
         .clipShape(Capsule())
     }
 }
@@ -3299,18 +3347,33 @@ struct SettingsCard<Content: View>: View {
             if let h = header {
                 Text(h.uppercased())
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    .foregroundStyle(DS.C.secondaryLabel)
                     .padding(.leading, 4)
             }
             VStack(spacing: 0) {
                 content()
             }
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(DS.C.controlBackground)
+            .clipShape(RoundedRectangle(cornerRadius: DS.Rad.m, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 0.8)
+                RoundedRectangle(cornerRadius: DS.Rad.m, style: .continuous)
+                    .strokeBorder(DS.C.separator.opacity(0.35), lineWidth: 0.8)
             )
+        }
+    }
+}
+
+/// Lớp nền Liquid Glass — dùng trên macOS 26+, fallback material thường cho máy cũ.
+private struct GlassFill: View {
+    let cornerRadius: CGFloat
+    var body: some View {
+        if #available(macOS 26, *) {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(.regularMaterial)
+                .glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+        } else {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(.regularMaterial)
         }
     }
 }
@@ -3377,18 +3440,18 @@ struct Sidebar: View {
                         .font(.system(size: 15, weight: .bold))
                     HStack(spacing: 6) {
                         Circle()
-                            .fill(state.overallReady ? Color.green : Color.orange)
+                            .fill(state.overallReady ? DS.C.success : DS.C.warning)
                             .frame(width: 6, height: 6)
                         Text(state.overallReady ? "Online" : "Attention")
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(state.overallReady ? Color.green : Color.orange)
+                            .foregroundStyle(state.overallReady ? DS.C.success : DS.C.warning)
                     }
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
-            .padding(.bottom, 14)
+            .padding(.horizontal, DS.Sp.l)
+            .padding(.top, DS.Sp.l)
+            .padding(.bottom, DS.Sp.l)
 
             Divider().opacity(0.5)
 
@@ -3396,16 +3459,16 @@ struct Sidebar: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("NAVIGATION")
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 4)
+                    .foregroundStyle(DS.C.tertiaryLabel)
+                    .padding(.horizontal, DS.Sp.s)
+                    .padding(.bottom, DS.Sp.xs)
 
                 ForEach(AppState.Section.allCases) { sec in
                     sidebarItem(sec)
                 }
             }
             .padding(.horizontal, 10)
-            .padding(.top, 14)
+            .padding(.top, DS.Sp.l)
 
             Spacer(minLength: 0)
 
@@ -3416,9 +3479,7 @@ struct Sidebar: View {
                 HStack(spacing: 8) {
                     SquircleIcon(
                         symbol: "server.rack",
-                        color: state.routerStatus == .ready
-                            ? Color(red: 0.19, green: 0.68, blue: 0.60)
-                            : .orange,
+                        color: state.routerStatus == .ready ? DS.C.success : DS.C.warning,
                         size: 22,
                         inner: 10,
                         radius: 6
@@ -3428,19 +3489,24 @@ struct Sidebar: View {
                             .font(.system(size: 11, weight: .semibold))
                         Text(state.routerStatus == .ready ? "Gateway ready" : "Gateway offline")
                             .font(.system(size: 10))
-                            .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                            .foregroundStyle(DS.C.secondaryLabel)
                     }
                     Spacer(minLength: 0)
                     Text("\(state.readyProxiesCount)/\(max(state.proxies.count, 1))")
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                        .foregroundStyle(DS.C.tertiaryLabel)
                         .help("Proxies ready / configured")
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, DS.Sp.m)
                 .padding(.vertical, 10)
             }
         }
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        .background(DS.C.controlBackground.opacity(0.55))
+        .background {
+            if #available(macOS 26, *) {
+                GlassFill(cornerRadius: 0)
+            }
+        }
     }
 
     private func sidebarItem(_ sec: AppState.Section) -> some View {
@@ -3451,7 +3517,7 @@ struct Sidebar: View {
             HStack(spacing: 11) {
                 SquircleIcon(
                     symbol: sec.icon,
-                    color: selected ? sec.accentColor : Color(nsColor: .tertiaryLabelColor).opacity(0.85),
+                    color: selected ? DS.C.brand : DS.C.tertiaryLabel.opacity(0.85),
                     size: 28,
                     inner: 13,
                     radius: 7
@@ -3459,15 +3525,15 @@ struct Sidebar: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(sec.rawValue)
                         .font(.system(size: 13, weight: selected ? .semibold : .medium))
-                        .foregroundStyle(selected ? Color(nsColor: .labelColor) : Color(nsColor: .secondaryLabelColor))
+                        .foregroundStyle(selected ? DS.C.label : DS.C.secondaryLabel)
                     Text(sec.subtitle)
                         .font(.system(size: 10))
-                        .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                        .foregroundStyle(DS.C.tertiaryLabel)
                 }
                 Spacer(minLength: 0)
                 if selected {
                     Circle()
-                        .fill(sec.accentColor)
+                        .fill(DS.C.brand)
                         .frame(width: 6, height: 6)
                 }
             }
@@ -3475,11 +3541,11 @@ struct Sidebar: View {
             .padding(.vertical, 9)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(selected ? sec.accentColor.opacity(0.14) : Color.clear)
+                    .fill(selected ? DS.C.brand.opacity(0.14) : Color.clear)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(selected ? sec.accentColor.opacity(0.28) : Color.clear, lineWidth: 1)
+                    .strokeBorder(selected ? DS.C.brand.opacity(0.28) : Color.clear, lineWidth: 1)
             )
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
@@ -3748,28 +3814,31 @@ struct OverviewView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let topH = max(300.0, geo.size.height * 0.52)
-            let pad: CGFloat = 14
-            VStack(spacing: 12) {
-                // Hàng 1: biểu đồ (2/3) + recent (1/3)
-                HStack(alignment: .top, spacing: 12) {
+            let pad: CGFloat = DS.Sp.l
+            let gap: CGFloat = DS.Sp.m
+            let colW = geo.size.width - pad * 2 - gap
+            HStack(alignment: .top, spacing: gap) {
+                // Cột trái (2/3): Topology trên + status/stats/services dưới
+                VStack(alignment: .leading, spacing: DS.Sp.m) {
                     OverviewGraphCard()
-                        .frame(width: (geo.size.width - pad * 2 - 12) * (2.0 / 3.0))
-                    OverviewRecentCard()
-                        .frame(maxWidth: .infinity)
-                }
-                .frame(height: topH)
+                        .frame(minHeight: 260)
+                        .frame(maxHeight: geo.size.height * 0.52)
 
-                // Hàng 2: status + services
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
-                        compactHero
-                        compactStats
-                        activeServicesCard
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: DS.Sp.m) {
+                            compactHero
+                            compactStats
+                            activeServicesCard
+                        }
+                        .padding(.bottom, DS.Sp.s)
                     }
-                    .padding(.bottom, 8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(maxHeight: .infinity)
+                .frame(width: colW * (2.0 / 3.0))
+
+                // Cột phải (1/3): Recent Requests chạy suốt chiều cao
+                OverviewRecentCard()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .padding(pad)
         }
@@ -3783,31 +3852,33 @@ struct OverviewView: View {
         }
     }
 
+    // MARK: - Hero
+
     private var compactHero: some View {
         SettingsCard {
-            HStack(spacing: 12) {
+            HStack(spacing: DS.Sp.m) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill((state.overallReady ? Color.green : Color.orange).opacity(0.16))
+                    RoundedRectangle(cornerRadius: DS.Rad.s, style: .continuous)
+                        .fill(heroTint.opacity(0.16))
                         .frame(width: 34, height: 34)
                     Image(systemName: state.overallReady ? "checkmark.shield.fill" : "exclamationmark.triangle.fill")
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(state.overallReady ? Color.green : Color.orange)
+                        .foregroundStyle(heroTint)
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 7) {
                         Text(state.statusHeadline)
-                            .font(.system(size: 14, weight: .bold))
+                            .font(.system(size: 14, weight: .semibold))
                         Circle()
-                            .fill(state.overallReady ? Color.green : Color.orange)
+                            .fill(state.overallReady ? DS.C.success : DS.C.warning)
                             .frame(width: 7, height: 7)
                     }
                     Text(state.statusDetailLine)
                         .font(.system(size: 11))
-                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                        .foregroundStyle(DS.C.secondaryLabel)
                         .lineLimit(1)
                 }
-                Spacer(minLength: 8)
+                Spacer(minLength: DS.Sp.s)
                 HStack(spacing: 6) {
                     Button { state.restart() } label: {
                         Image(systemName: "arrow.clockwise").frame(width: 14, height: 14)
@@ -3819,7 +3890,7 @@ struct OverviewView: View {
 
                     if !state.isManuallyStopped {
                         Button { state.stopAll() } label: {
-                            Image(systemName: "stop.fill").foregroundStyle(Color.red).frame(width: 14, height: 14)
+                            Image(systemName: "stop.fill").foregroundStyle(DS.C.danger).frame(width: 14, height: 14)
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -3827,7 +3898,7 @@ struct OverviewView: View {
                         .help("Dừng toàn bộ dịch vụ")
                     } else {
                         Button { state.startAll() } label: {
-                            Image(systemName: "play.fill").foregroundStyle(Color.green).frame(width: 14, height: 14)
+                            Image(systemName: "play.fill").foregroundStyle(DS.C.success).frame(width: 14, height: 14)
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -3836,35 +3907,41 @@ struct OverviewView: View {
                     }
                 }
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, DS.Sp.l)
             .padding(.vertical, 10)
         }
     }
+
+    private var heroTint: Color {
+        state.overallReady ? DS.C.success : DS.C.warning
+    }
+
+    // MARK: - Stats
 
     private var compactStats: some View {
         SettingsCard(header: "System Overview") {
             HStack(spacing: 0) {
                 overviewStatTile(
                     title: "9Router Gateway",
-                    value: "Port 20128",
-                    badgeText: state.routerStatus == .ready ? "ONLINE" : "OFFLINE",
-                    badgeColor: state.routerStatus == .ready ? .green : .orange,
+                    value: state.routerStatus == .ready ? "Online" : "Offline",
+                    badgeText: "Port 20128",
+                    badgeColor: state.routerStatus == .ready ? DS.C.success : DS.C.warning,
                     icon: "server.rack"
                 )
-                Divider().padding(.vertical, 8)
+                Divider().padding(.vertical, DS.Sp.s)
                 overviewStatTile(
                     title: "Local Proxies",
-                    value: "\(state.readyProxiesCount)/\(state.proxies.count) Ready",
-                    badgeText: "\(state.proxies.count) Configured",
-                    badgeColor: Color(red: 0.38, green: 0.45, blue: 0.98),
+                    value: "\(state.readyProxiesCount) of \(state.proxies.count) ready",
+                    badgeText: "\(state.proxies.count) configured",
+                    badgeColor: DS.C.brand,
                     icon: "antenna.radiowaves.left.and.right"
                 )
-                Divider().padding(.vertical, 8)
+                Divider().padding(.vertical, DS.Sp.s)
                 overviewStatTile(
                     title: "Runtime Environment",
-                    value: "\(state.envReadyCount)/\(state.envItems.count) Ready",
-                    badgeText: state.envReadyCount == state.envItems.count && !state.envItems.isEmpty ? "Complete" : "Setup Needed",
-                    badgeColor: state.envReadyCount == state.envItems.count && !state.envItems.isEmpty ? .green : .orange,
+                    value: "\(state.envReadyCount) of \(state.envItems.count) ready",
+                    badgeText: state.envReadyCount == state.envItems.count && !state.envItems.isEmpty ? "Complete" : "Setup needed",
+                    badgeColor: state.envReadyCount == state.envItems.count && !state.envItems.isEmpty ? DS.C.success : DS.C.warning,
                     icon: "cube.fill"
                 )
             }
@@ -3884,47 +3961,44 @@ struct OverviewView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    .foregroundStyle(DS.C.secondaryLabel)
                     .lineLimit(1)
                 HStack(spacing: 6) {
                     Text(value)
-                        .font(.system(size: 12.5, weight: .bold))
+                        .font(.system(size: 12.5, weight: .semibold))
                         .lineLimit(1)
                     Text(badgeText)
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(badgeColor)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
-                        .background(badgeColor.opacity(0.14))
+                        .background(badgeColor.opacity(0.12))
                         .clipShape(Capsule())
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, DS.Sp.m)
+        .padding(.vertical, DS.Sp.s)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var activeServicesCard: some View {
-        SettingsCard(header: "Active Services (\(state.proxies.count + 3))") {
+        SettingsCard(header: "Active Services") {
             VStack(spacing: 0) {
                 // 1. Cursor
                 serviceRow(
                     icon: cursorOverviewIcon,
                     color: cursorOverviewIconColor,
                     title: "Cursor",
-                    badge: "FUNNEL",
                     subtitle: cursorOverviewSubtitle,
-                    monoSubtitle: cursorOverviewSubtitleIsURL,
-                    latency: state.cursorLatencyMs.map { "\($0) ms" },
                     statusText: {
                         if state.testingCursor { return "Testing" }
                         if let ok = state.cursorTestOk { return ok ? "Running" : "Fail" }
                         return cursorServicePillText
                     }(),
                     statusColor: {
-                        if let ok = state.cursorTestOk { return ok ? Color.green : Color.orange }
+                        if let ok = state.cursorTestOk { return ok ? DS.C.success : DS.C.warning }
                         return cursorServicePillColor
                     }()
                 ) {
@@ -3933,41 +4007,36 @@ struct OverviewView: View {
                         selection: Binding(get: { resolvedCombo(state.cursorAppliedCombo) }, set: { state.applyComboToCursor($0) }),
                         disabled: state.cursorApplyBusy || state.routerStatus != .ready || !(state.bridgeStatus.wanted || state.bridgeStatus.isReady)
                     )
-                    Button {
-                        state.testCursor()
-                    } label: {
-                        if state.testingCursor {
-                            ProgressView().controlSize(.mini)
-                        } else {
-                            Text("Test")
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(state.testingCursor || state.routerStatus != .ready || !(state.bridgeStatus.wanted || state.bridgeStatus.isReady))
-                    .help("Test Funnel URL + chat ping combo đang apply")
                     Toggle("", isOn: Binding(
                         get: { state.bridgeStatus.wanted || state.bridgeStatus.isReady },
                         set: { state.setCursorBridgeEnabled($0) }
                     ))
                     .toggleStyle(.switch).labelsHidden()
                     .disabled(state.bridgeBusy || state.bridgeSetupRunning || state.routerStatus != .ready)
-                    Button("Info") { state.showCursorDetails = true }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .help("Checklist + Base URL + API key")
+                    moreMenu {
+                        Button {
+                            state.testCursor()
+                        } label: {
+                            Label("Test Connection", systemImage: "bolt.horizontal")
+                        }
+                        .disabled(state.testingCursor || state.routerStatus != .ready || !(state.bridgeStatus.wanted || state.bridgeStatus.isReady))
+
+                        Button {
+                            state.showCursorDetails = true
+                        } label: {
+                            Label("Cursor Details", systemImage: "info.circle")
+                        }
+                    }
                 }
 
                 // 2. Codex
                 serviceRow(
                     icon: "terminal.fill",
-                    color: Color(red: 0.20, green: 0.70, blue: 0.45),
+                    color: DS.C.brand,
                     title: "Codex",
-                    badge: "LOCAL",
-                    subtitle: "http://127.0.0.1:20128/v1",
-                    latency: state.codexLatencyMs.map { "\($0) ms" },
+                    subtitle: "Local terminal agent",
                     statusText: state.testingCodex ? "Testing" : (state.codexTestOk == false ? "Fail" : (state.routerStatus == .ready ? "Running" : "Offline")),
-                    statusColor: state.codexTestOk == false ? .orange : (state.routerStatus == .ready ? .green : .orange),
+                    statusColor: state.codexTestOk == false ? DS.C.warning : (state.routerStatus == .ready ? DS.C.success : DS.C.warning),
                     showDivider: true
                 ) {
                     if state.codexApplyBusy { ProgressView().controlSize(.small) }
@@ -3975,50 +4044,72 @@ struct OverviewView: View {
                         selection: Binding(get: { resolvedCombo(state.codexAppliedCombo) }, set: { state.applyComboToCodex($0) }),
                         disabled: state.codexApplyBusy || state.routerStatus != .ready
                     )
-                    Button { state.testCodex() } label: {
-                        if state.testingCodex { ProgressView().controlSize(.mini) } else { Text("Test") }
+                    moreMenu {
+                        Button {
+                            state.testCodex()
+                        } label: {
+                            Label("Test Connection", systemImage: "bolt.horizontal")
+                        }
+                        .disabled(state.testingCodex || state.routerStatus != .ready)
+
+                        Button {
+                            state.copy("http://127.0.0.1:20128/v1")
+                        } label: {
+                            Label("Copy API Endpoint", systemImage: "doc.on.doc")
+                        }
                     }
-                    .buttonStyle(.bordered).controlSize(.small)
-                    .disabled(state.testingCodex || state.routerStatus != .ready)
-                    Button("Copy API") { state.copy("http://127.0.0.1:20128/v1") }
-                        .buttonStyle(.bordered).controlSize(.small)
                 }
 
                 // 3. 9Router
                 serviceRow(
                     icon: "server.rack",
-                    color: Color(red: 0.19, green: 0.68, blue: 0.60),
+                    color: DS.C.brand,
                     title: "9Router Gateway",
-                    badge: "PORT 20128",
-                    subtitle: "http://127.0.0.1:20128",
-                    subtitleCyan: true,
+                    subtitle: "Routing gateway",
                     statusText: state.routerStatus == .ready ? "Running" : "Offline",
-                    statusColor: state.routerStatus == .ready ? .green : .orange,
+                    statusColor: state.routerStatus == .ready ? DS.C.success : DS.C.warning,
                     showDivider: true
                 ) {
-                    Button("Copy Endpoint") { state.copy("http://127.0.0.1:20128") }
-                        .buttonStyle(.bordered).controlSize(.small)
-                    Button("Open Dashboard") { state.openDashboard() }
-                        .buttonStyle(.bordered).controlSize(.small)
+                    moreMenu {
+                        Button {
+                            state.copy("http://127.0.0.1:20128")
+                        } label: {
+                            Label("Copy API Endpoint", systemImage: "doc.on.doc")
+                        }
+
+                        Button {
+                            state.openDashboard()
+                        } label: {
+                            Label("Open Dashboard", systemImage: "safari")
+                        }
                         .disabled(state.routerStatus != .ready)
+                    }
                 }
 
                 // 4. Proxies
                 ForEach(state.proxies) { proxy in
                     serviceRow(
                         icon: proxy.iconName,
-                        color: Color(red: 0.45, green: 0.40, blue: 0.95),
+                        color: DS.C.brand,
                         title: proxy.name,
-                        badge: "PORT \(proxy.port)",
-                        subtitle: "http://127.0.0.1:\(proxy.port)/v1",
-                        latency: (proxy.enabled && proxy.status == .ready) ? "\(proxy.latency ?? 1) ms" : nil,
+                        subtitle: "Local endpoint",
                         statusText: proxy.enabled ? (proxy.status == .ready ? "Running" : "Offline") : "Off",
-                        statusColor: proxy.enabled && proxy.status == .ready ? .green : .orange,
+                        statusColor: proxy.enabled && proxy.status == .ready ? DS.C.success : DS.C.warning,
                         showDivider: true
                     ) {
-                        TestProxyButton(proxy: proxy)
-                        Button("Copy API") { state.copy("http://127.0.0.1:\(proxy.port)/v1") }
-                            .buttonStyle(.bordered).controlSize(.small)
+                        moreMenu {
+                            Button {
+                                state.testProxy(proxy)
+                            } label: {
+                                Label("Test Connection", systemImage: "bolt.horizontal")
+                            }
+
+                            Button {
+                                state.copy("http://127.0.0.1:\(proxy.port)/v1")
+                            } label: {
+                                Label("Copy API Endpoint", systemImage: "doc.on.doc")
+                            }
+                        }
                     }
                 }
             }
@@ -4030,11 +4121,7 @@ struct OverviewView: View {
         icon: String,
         color: Color,
         title: String,
-        badge: String,
         subtitle: String,
-        subtitleCyan: Bool = false,
-        monoSubtitle: Bool = false,
-        latency: String? = nil,
         statusText: String,
         statusColor: Color,
         showDivider: Bool = false,
@@ -4042,35 +4129,43 @@ struct OverviewView: View {
     ) -> some View {
         VStack(spacing: 0) {
             if showDivider {
-                Divider().padding(.leading, 50)
+                Divider().padding(.leading, 52)
             }
-            HStack(spacing: 10) {
+            HStack(spacing: DS.Sp.m) {
                 SquircleIcon(symbol: icon, color: color, size: 28, inner: 12, radius: 7)
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(title).font(.system(size: 12.5, weight: .semibold))
-                        CodeBadge(text: badge)
-                    }
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(DS.C.label)
                     Text(subtitle)
-                        .font(.system(size: 10.5, design: monoSubtitle || subtitle.hasPrefix("http") ? .monospaced : .default))
-                        .foregroundStyle(subtitleCyan ? Color(red: 0.35, green: 0.78, blue: 0.95) : Color(nsColor: .secondaryLabelColor))
+                        .font(.system(size: 11))
+                        .foregroundStyle(DS.C.secondaryLabel)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                Spacer(minLength: 12)
-                if let latency {
-                    Text(latency)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
-                }
+                Spacer(minLength: DS.Sp.m)
                 StatusPill(text: statusText, color: statusColor)
-                HStack(spacing: 6) {
-                    actions()
-                }
+                actions()
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
+            .padding(.horizontal, DS.Sp.m)
+            .padding(.vertical, 10)
         }
+    }
+
+    private func moreMenu(@ViewBuilder content: () -> some View) -> some View {
+        Menu {
+            content()
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(DS.C.secondaryLabel)
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("More options")
     }
 
     private var serviceComboOptions: [String] {
@@ -4101,9 +4196,9 @@ struct OverviewView: View {
     }
 
     private var cursorServicePillColor: Color {
-        if !(state.bridgeStatus.wanted || state.bridgeStatus.isReady) { return .orange }
-        if state.pathHealth.cursorPathOk { return .green }
-        return .orange
+        if !(state.bridgeStatus.wanted || state.bridgeStatus.isReady) { return DS.C.warning }
+        if state.pathHealth.cursorPathOk { return DS.C.success }
+        return DS.C.warning
     }
 
     private var cursorOverviewSubtitle: String {
@@ -4127,9 +4222,9 @@ struct OverviewView: View {
     }
 
     private var cursorOverviewIconColor: Color {
-        if state.pathHealth.cursorPathOk { return .green }
-        if state.bridgeStatus.wanted || state.bridgeStatus.isReady { return .orange }
-        return Color(nsColor: .tertiaryLabelColor)
+        if state.pathHealth.cursorPathOk { return DS.C.success }
+        if state.bridgeStatus.wanted || state.bridgeStatus.isReady { return DS.C.warning }
+        return DS.C.tertiaryLabel
     }
 }
 
@@ -4147,19 +4242,19 @@ struct UsagePeriodPicker: View {
                 } label: {
                     Text(p.label)
                         .font(.system(size: 11, weight: period == p ? .semibold : .medium))
-                        .foregroundStyle(period == p ? Color.white : Color.white.opacity(0.55))
+                        .foregroundStyle(period == p ? DS.C.chartOnDarkPrimary : DS.C.chartOnDarkTertiary)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
                         .background(
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(period == p ? Color.white.opacity(0.14) : Color.clear)
+                                .fill(period == p ? DS.C.chartOnDarkPrimary.opacity(0.14) : Color.clear)
                         )
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(3)
-        .background(Color.white.opacity(0.06))
+        .background(DS.C.chartOnDarkPrimary.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
@@ -4183,10 +4278,10 @@ struct OverviewUsageMetricsBar: View, Equatable {
             }
 
             HStack(spacing: 6) {
-                miniMetric("REQ", "\(stats.requests)", Color(nsColor: .labelColor))
-                miniMetric("IN", ComboFormat.tokens(stats.promptTokens), .orange)
-                miniMetric("OUT", ComboFormat.tokens(stats.completionTokens), .green)
-                miniMetric("COST", ComboFormat.cost(stats.cost), Color(red: 0.95, green: 0.75, blue: 0.25))
+                miniMetric("REQ", "\(stats.requests)", DS.C.chartOnDarkPrimary)
+                miniMetric("IN", ComboFormat.tokens(stats.promptTokens), DS.C.warning)
+                miniMetric("OUT", ComboFormat.tokens(stats.completionTokens), DS.C.success)
+                miniMetric("COST", ComboFormat.cost(stats.cost), DS.C.chartCost)
             }
         }
         .padding(.horizontal, 10)
@@ -4197,7 +4292,7 @@ struct OverviewUsageMetricsBar: View, Equatable {
         VStack(spacing: 2) {
             Text(title)
                 .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                .foregroundStyle(DS.C.chartOnDarkTertiary)
             Text(value)
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .foregroundStyle(color)
@@ -4206,7 +4301,7 @@ struct OverviewUsageMetricsBar: View, Equatable {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 6)
-        .background(Color.white.opacity(0.04))
+        .background(DS.C.chartOnDarkPrimary.opacity(0.04))
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
@@ -4312,7 +4407,7 @@ struct OverviewGraphCard: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(red: 0.07, green: 0.08, blue: 0.10))
+                .background(DS.C.chartSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 0))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -4339,21 +4434,21 @@ struct OverviewRecentCard: View {
                 if usage.recentUsage.isEmpty {
                     Text("Chưa có request.")
                         .font(.system(size: 12))
-                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                        .foregroundStyle(DS.C.secondaryLabel)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 1) {
-                            ForEach(usage.recentUsage.prefix(18)) { row in
+                            ForEach(usage.recentUsage.prefix(6)) { row in
                                 recentRow(row)
                             }
                         }
-                        .padding(.vertical, 4)
+                        .padding(.vertical, 2)
                     }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(red: 0.07, green: 0.08, blue: 0.10))
+            .background(DS.C.chartSurface)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -4363,26 +4458,25 @@ struct OverviewRecentCard: View {
         let ok = row.status.lowercased() == "ok"
         return HStack(alignment: .center, spacing: 8) {
             Circle()
-                .fill(ok ? Color.green : Color.orange)
+                .fill(ok ? DS.C.success : DS.C.warning)
                 .frame(width: 6, height: 6)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.model)
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.92))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(DS.C.chartOnDarkPrimary)
                     .lineLimit(1)
                 HStack(spacing: 6) {
                     Text(row.provider)
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Color.white.opacity(0.38))
+                        .foregroundStyle(DS.C.chartOnDarkSecondary)
                         .lineLimit(1)
                     Text("·")
-                        .foregroundStyle(Color.white.opacity(0.2))
-                    // IN cam · OUT xanh — không cần header cột
+                        .foregroundStyle(DS.C.chartOnDarkSecondary)
                     Text("\(ComboFormat.tokens(row.promptTokens))↑")
-                        .foregroundStyle(Color.orange)
+                        .foregroundStyle(DS.C.warning)
                     Text("\(ComboFormat.tokens(row.completionTokens))↓")
-                        .foregroundStyle(Color.green)
+                        .foregroundStyle(DS.C.success)
                 }
                 .font(.system(size: 10, weight: .medium, design: .monospaced))
             }
@@ -4391,11 +4485,11 @@ struct OverviewRecentCard: View {
 
             Text(ComboFormat.relativeTime(row.timestamp))
                 .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .foregroundStyle(Color.white.opacity(0.35))
+                .foregroundStyle(DS.C.chartOnDarkTertiary)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, DS.Sp.m)
         .padding(.vertical, 8)
-        .background(hit ? Color.orange.opacity(0.08) : Color.clear)
+        .background(hit ? DS.C.warning.opacity(0.08) : Color.clear)
     }
 
     private func matches(_ model: String) -> Bool {
@@ -4551,10 +4645,10 @@ private struct TopologyGridBackground: View, Equatable {
                 p.addLine(to: CGPoint(x: canvasSize.width, y: y))
                 y += step
             }
-            ctx.stroke(p, with: .color(.white.opacity(0.04)), lineWidth: 1)
+            ctx.stroke(p, with: .color(DS.C.chartOnDarkPrimary.opacity(0.04)), lineWidth: 1)
         }
         .frame(width: size.width, height: size.height)
-        .background(Color(red: 0.07, green: 0.08, blue: 0.10))
+        .background(DS.C.chartSurface)
         .drawingGroup()
         .allowsHitTesting(false)
     }
@@ -4883,11 +4977,11 @@ struct ComboTopologyGraph: View {
         Button(action: action) {
             Image(systemName: s)
                 .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.white.opacity(0.75))
+                .foregroundStyle(DS.C.chartOnDarkPrimary)
                 .frame(width: 26, height: 26)
-                .background(Color.white.opacity(0.08))
+                .background(DS.C.chartOnDarkPrimary.opacity(0.08))
                 .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(DS.C.chartOnDarkPrimary.opacity(0.12), lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
@@ -4900,12 +4994,12 @@ struct ComboTopologyGraph: View {
             }
             Text(comboName)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(DS.C.chartOnDarkPrimary)
                 .lineLimit(1)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(Color(red: 0.14, green: 0.15, blue: 0.17))
+        .background(DS.C.chartSurfaceElevated)
         .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.orange, lineWidth: 1.6))
         .shadow(color: Color.orange.opacity(glow ? 0.65 : 0.28), radius: glow ? 16 : 8)
         .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
@@ -4928,12 +5022,12 @@ struct ComboTopologyGraph: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(n.title)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(dim ? 0.4 : 0.95))
+                    .foregroundStyle(DS.C.chartOnDarkPrimary.opacity(dim ? 0.4 : 1))
                     .lineLimit(1)
                 if !n.model.isEmpty {
                     Text(n.model)
                         .font(.system(size: 8, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(dim ? 0.28 : 0.5))
+                        .foregroundStyle(DS.C.chartOnDarkPrimary.opacity(dim ? 0.28 : 0.5))
                         .lineLimit(1)
                         .frame(maxWidth: 96, alignment: .leading)
                 }
@@ -4941,24 +5035,24 @@ struct ComboTopologyGraph: View {
 
             VStack(spacing: 2) {
                 Circle()
-                    .fill(dim ? Color.white.opacity(0.25) : n.statusColor)
+                    .fill(dim ? DS.C.chartOnDarkTertiary : n.statusColor)
                     .frame(width: 6, height: 6)
                 Text(n.statusText)
                     .font(.system(size: 7, weight: .bold))
-                    .foregroundStyle(dim ? Color.white.opacity(0.3) : n.statusColor)
+                    .foregroundStyle(dim ? DS.C.chartOnDarkTertiary : n.statusColor)
                     .lineLimit(1)
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(Color(red: 0.14, green: 0.15, blue: 0.17).opacity(dim ? 0.75 : 1))
+        .background(DS.C.chartSurfaceElevated.opacity(dim ? 0.75 : 1))
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(
                     live ? liveColor :
                     err ? Color.red :
                     warm ? Color.orange.opacity(0.7) :
-                    Color.white.opacity(dim ? 0.08 : 0.14),
+                    DS.C.chartOnDarkPrimary.opacity(dim ? 0.08 : 0.14),
                     lineWidth: (live || err) ? 1.6 : 1
                 )
         )
