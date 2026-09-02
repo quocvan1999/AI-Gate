@@ -50,7 +50,7 @@ private struct MainWindowBootstrap: NSViewRepresentable {
         DispatchQueue.main.async {
             guard !context.coordinator.didConfigure, let window = view.window else { return }
             context.coordinator.didConfigure = true
-            AppWindow.present(window, fillScreen: true)
+            AppWindow.present(window)
         }
         return view
     }
@@ -59,7 +59,7 @@ private struct MainWindowBootstrap: NSViewRepresentable {
         DispatchQueue.main.async {
             guard !context.coordinator.didConfigure, let window = nsView.window else { return }
             context.coordinator.didConfigure = true
-            AppWindow.present(window, fillScreen: true)
+            AppWindow.present(window)
         }
     }
 
@@ -73,12 +73,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         AppState.shared.start()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            AppWindow.present(fillScreen: true)
+            AppWindow.present()
         }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        AppWindow.present(fillScreen: true)
+        AppWindow.present()
         return false
     }
 
@@ -127,38 +127,66 @@ struct ProxyConfig: Identifiable, Codable, Hashable {
 }
 
 // MARK: - Design System
-/// Design tokens chuẩn Apple — spacing 4pt base, corner radius, semantic colors.
+/// Design tokens chuẩn Apple — spacing 4pt base, corner radius, semantic colors, typography.
 /// Dùng xuyên suốt thay vì hardcode từng giá trị.
 enum DS {
     enum Sp {
+        static let xxs: CGFloat = 2
         static let xs: CGFloat = 4
         static let s: CGFloat = 8
         static let m: CGFloat = 12
         static let l: CGFloat = 16
         static let xl: CGFloat = 20
         static let xxl: CGFloat = 24
+        static let xxxl: CGFloat = 32
+        static let xxxxl: CGFloat = 40
     }
 
     enum Rad {
         static let s: CGFloat = 6
         static let m: CGFloat = 10
-        static let l: CGFloat = 14
-        static let xl: CGFloat = 18
+        static let l: CGFloat = 12
+        static let xl: CGFloat = 16
+        static let xxl: CGFloat = 20
+    }
+
+    /// Typography tokens — SF Pro (.system), SF Mono (.monospaced) cho dữ liệu/endpoint/log.
+    /// Tránh nhân bản size trực tiếp; dùng token để giữ hierarchy nhất quán.
+    enum Typo {
+        static let pageTitle = Font.system(size: 22, weight: .semibold)
+        static let sectionTitle = Font.system(size: 15, weight: .semibold)
+        static let rowTitle = Font.system(size: 13, weight: .semibold)
+        static let body = Font.system(size: 13, weight: .regular)
+        static let caption = Font.system(size: 12, weight: .medium)
+        static let small = Font.system(size: 11, weight: .regular)
+        static let micro = Font.system(size: 10, weight: .medium)
+        static let mono = Font.system(size: 11, weight: .regular, design: .monospaced)
+        static let monoMicro = Font.system(size: 10, weight: .medium, design: .monospaced)
     }
 
     enum C {
         static let label = Color(nsColor: .labelColor)
         static let secondaryLabel = Color(nsColor: .secondaryLabelColor)
         static let tertiaryLabel = Color(nsColor: .tertiaryLabelColor)
+        static let quaternaryLabel = Color(nsColor: .quaternaryLabelColor)
         static let separator = Color(nsColor: .separatorColor)
         static let windowBackground = Color(nsColor: .windowBackgroundColor)
         static let controlBackground = Color(nsColor: .controlBackgroundColor)
         static let underPage = Color(nsColor: .underPageBackgroundColor)
+        /// Nền nổi bật — dùng cho card/khối nâng cao.
+        static let surfaceElevated = Color(nsColor: .controlBackgroundColor)
+        /// Nền "chìm" — search field, code block, input.
+        static let surfaceInset = Color(nsColor: .underPageBackgroundColor)
+        /// Fill hover phổ quát — đúng hệ semantic (sáng/dark tự đổi).
+        static let fillHover = Color.primary.opacity(0.06)
+        /// Fill chọn phổ quát — theo accent người dùng.
+        static let fillSelected = Color(nsColor: .controlAccentColor).opacity(0.15)
         /// Màu nhấn duy nhất của app — theo accent người dùng trong System Settings.
         static let brand = Color(nsColor: .controlAccentColor)
         static let success = Color(nsColor: .systemGreen)
         static let warning = Color(nsColor: .systemOrange)
         static let danger = Color(nsColor: .systemRed)
+        static let info = Color(nsColor: .systemBlue)
         /// Nền canvas cho vùng dữ liệu (biểu đồ / topology).
         /// Cố định tối — một "bề mặt trực quan hóa" có chủ đích (như Activity Monitor),
         /// vì các node/đường kẻ trong topology được thiết kế với nét sáng.
@@ -171,6 +199,15 @@ enum DS {
         static let chartOnDarkTertiary = Color.white.opacity(0.35)
         /// Vàng nhẹ cho giá trị chi phí — giữ độ tương phản trên nền tối.
         static let chartCost = Color(red: 0.95, green: 0.75, blue: 0.25)
+        /// Teal "live" — trạng thái request đang chạy trên topology.
+        static let chartLive = Color(red: 0.21, green: 0.84, blue: 0.76)
+    }
+
+    /// Depth/elevation — tint theo nền, không dùng black thuần.
+    enum Shadow {
+        static let elevation1 = Color.black.opacity(0.06)
+        static let elevation2 = Color.black.opacity(0.10)
+        static let elevation3 = Color.black.opacity(0.16)
     }
 }
 
@@ -436,8 +473,8 @@ enum NineRouterUsageSSEParse {
 
         var recent: [UsageRequestItem] = []
         if let rows = obj["recentRequests"] as? [[String: Any]] {
-            recent.reserveCapacity(min(rows.count, 20))
-            for (idx, row) in rows.prefix(20).enumerated() {
+            recent.reserveCapacity(min(rows.count, 50))
+            for (idx, row) in rows.prefix(50).enumerated() {
                 let ts = row["timestamp"] as? String ?? ""
                 let provider = row["provider"] as? String ?? ""
                 let model = row["model"] as? String ?? ""
@@ -629,8 +666,6 @@ enum NineRouterTopologySync {
 // MARK: - App State
 
 enum AppWindow {
-    private static var didFillScreenThisSession = false
-
     static func main() -> NSWindow? {
         NSApp.windows.first { window in
             guard window.canBecomeMain else { return false }
@@ -644,10 +679,6 @@ enum AppWindow {
         NSApp.activate(ignoringOtherApps: true)
         guard let win = window ?? main() else { return }
         if win.isMiniaturized { win.deminiaturize(nil) }
-        if fillScreen, !didFillScreenThisSession, let screen = win.screen ?? NSScreen.main {
-            didFillScreenThisSession = true
-            win.setFrame(screen.visibleFrame, display: true, animate: false)
-        }
         win.makeKeyAndOrderFront(nil)
     }
 }
@@ -785,6 +816,9 @@ final class AppState: ObservableObject {
     @Published var cursorLatencyMs: Int? = nil
     @Published var cursorTestOk: Bool? = nil
     @Published var showCursorDetails: Bool = false
+    @Published var showGatewayDetails: Bool = false
+    @Published var showProxiesDetails: Bool = false
+    @Published var showRuntimeDetails: Bool = false
     @Published var backupBusy: Bool = false
     @Published var backupMessage: String = ""
     private var lastBridgeHealAttempt: Date? = nil
@@ -911,9 +945,9 @@ final class AppState: ObservableObject {
         AppWindow.main()
     }
 
-    /// Hiện cửa sổ chính; `fillScreen` = chiếm full vùng làm việc lần đầu trong session.
-    static func presentMainWindow(_ window: NSWindow? = nil, fillScreen: Bool = false) {
-        AppWindow.present(window, fillScreen: fillScreen)
+    /// Hiện cửa sổ chính; giữ frame người dùng đã đặt (không force fill screen).
+    static func presentMainWindow(_ window: NSWindow? = nil) {
+        AppWindow.present(window)
     }
 
     enum Section: String, CaseIterable, Identifiable {
@@ -961,6 +995,7 @@ final class AppState: ObservableObject {
         codexAppliedCombo = bridgeStore.loadCodexCombo(default: "")
         launchBackendIfNeeded()
         startMenuBarHeartbeat()
+        checkEnvironment(force: true)
         syncSectionPolling()
     }
 
@@ -1944,7 +1979,7 @@ final class AppState: ObservableObject {
             let db = ("~/.9router/db/data.sqlite" as NSString).expandingTildeInPath
             // Một process sqlite3 — không spawn 2 lần / mỗi poll.
             let bundled = self.execShell(
-                "sqlite3 -separator '|' \"\(db)\" \"SELECT 'H', id, timestamp, IFNULL(provider,''), IFNULL(model,''), IFNULL(connectionId,''), IFNULL(promptTokens,0), IFNULL(completionTokens,0), IFNULL(status,'') FROM usageHistory ORDER BY id DESC LIMIT 20;\" 2>/dev/null"
+                "sqlite3 -separator '|' \"\(db)\" \"SELECT 'H', id, timestamp, IFNULL(provider,''), IFNULL(model,''), IFNULL(connectionId,''), IFNULL(promptTokens,0), IFNULL(completionTokens,0), IFNULL(status,'') FROM usageHistory ORDER BY id DESC LIMIT 50;\" 2>/dev/null"
             )
             var recent: [UsageRequestItem] = []
             for line in bundled.components(separatedBy: .newlines) {
@@ -3219,7 +3254,6 @@ struct AppLogoImage: View {
             }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
     }
 
     static func sizedImage(named name: String, points: CGFloat) -> NSImage? {
@@ -3257,17 +3291,17 @@ struct StatusPill: View {
     let color: Color
 
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 4) {
             Circle()
                 .fill(color)
-                .frame(width: 6, height: 6)
+                .frame(width: 5, height: 5)
             Text(text)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 9.5, weight: .semibold))
                 .foregroundStyle(color)
                 .lineLimit(1)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
         .background(color.opacity(0.12))
         .clipShape(Capsule())
     }
@@ -3319,22 +3353,22 @@ struct PageHeader: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
-            SquircleIcon(symbol: symbol, color: color, size: 44, inner: 20, radius: 10)
+            SquircleIcon(symbol: symbol, color: color, size: 40, inner: 18, radius: 10)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 20, weight: .bold))
-                    .foregroundStyle(Color(nsColor: .labelColor))
+                    .font(DS.Typo.pageTitle)
+                    .foregroundStyle(DS.C.label)
                 Text(subtitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    .font(DS.Typo.small)
+                    .foregroundStyle(DS.C.secondaryLabel)
             }
 
             Spacer()
 
             trailing
         }
-        .padding(.bottom, 4)
+        .padding(.bottom, 6)
     }
 }
 
@@ -3364,18 +3398,48 @@ struct SettingsCard<Content: View>: View {
 }
 
 /// Lớp nền Liquid Glass — dùng trên macOS 26+, fallback material thường cho máy cũ.
+/// Material là ngôn ngữ: chỉ dùng cho bề mặt nổi (sidebar/toolbar/sheet/popover),
+/// không đặt trên vùng dữ liệu cuộn. Tôn trọng giảm trong suốt của hệ thống.
 private struct GlassFill: View {
-    let cornerRadius: CGFloat
-    var body: some View {
-        if #available(macOS 26, *) {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(.regularMaterial)
-                .glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
-        } else {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(.regularMaterial)
+    enum Level {
+        case thin, regular, thick
+
+        var fill: Color {
+            switch self {
+            case .thin: return Color(nsColor: .windowBackgroundColor).opacity(0.55)
+            case .regular: return Color(nsColor: .controlBackgroundColor).opacity(0.62)
+            case .thick: return Color(nsColor: .controlBackgroundColor).opacity(0.82)
+            }
         }
     }
+
+    let level: Level
+    var cornerRadius: CGFloat = 0
+    var stroke: Bool = true
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(level.fill)
+            if #available(macOS 26, *) {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.regularMaterial)
+                    .glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+            } else {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.regularMaterial)
+            }
+            if stroke {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+            }
+        }
+    }
+}
+
+extension ShapeStyle where Self == Color {
+    /// Subtle surface tint — đổ theo system, không cần hardcode.
+    static var surfaceTint: Color { Color.primary.opacity(0.04) }
 }
 
 // MARK: - Main Navigation Window
@@ -3387,7 +3451,7 @@ struct MainWindow: View {
     var body: some View {
         NavigationSplitView {
             Sidebar()
-                .navigationSplitViewColumnWidth(min: 220, ideal: 248, max: 300)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 236, max: 280)
         } detail: {
             ZStack {
                 Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
@@ -3407,6 +3471,36 @@ struct MainWindow: View {
             .overlay(alignment: .bottom) {
                 ToastStackView()
                     .padding(.bottom, 22)
+            }
+            .toolbar {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    switch state.selectedSection {
+                    case .overview:
+                        EmptyView()
+                    case .proxies:
+                        Button {
+                            showingAddProxy = true
+                        } label: {
+                            Label("Add Proxy", systemImage: "plus")
+                        }
+                        .help("Add New Proxy")
+                    case .logs:
+                        Button {
+                            state.copyAllLogs()
+                        } label: {
+                            Label("Copy All", systemImage: "doc.on.doc")
+                        }
+                        .help("Copy all logs")
+                        Button {
+                            state.clearLogs()
+                        } label: {
+                            Label("Clear Logs", systemImage: "trash")
+                        }
+                        .help("Clear logs")
+                    default:
+                        EmptyView()
+                    }
+                }
             }
         }
         .navigationSplitViewStyle(.balanced)
@@ -3432,18 +3526,18 @@ struct Sidebar: View {
     var body: some View {
         VStack(spacing: 0) {
             // Brand header
-            HStack(spacing: 12) {
-                AppLogoImage(kind: .app, size: 36)
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 10) {
+                AppLogoImage(kind: .nav, size: 32)
+                VStack(alignment: .leading, spacing: 2) {
                     Text("AI Gate")
-                        .font(.system(size: 15, weight: .bold))
-                    HStack(spacing: 6) {
+                        .font(DS.Typo.sectionTitle)
+                        .foregroundStyle(DS.C.label)
+                    HStack(spacing: 5) {
                         Circle()
                             .fill(state.overallReady ? DS.C.success : DS.C.warning)
-                            .frame(width: 6, height: 6)
+                            .frame(width: 5, height: 5)
                         Text(state.overallReady ? "Online" : "Attention")
-                            .font(.system(size: 11, weight: .medium))
+                            .font(DS.Typo.micro)
                             .foregroundStyle(state.overallReady ? DS.C.success : DS.C.warning)
                     }
                 }
@@ -3451,62 +3545,22 @@ struct Sidebar: View {
             }
             .padding(.horizontal, DS.Sp.l)
             .padding(.top, DS.Sp.l)
-            .padding(.bottom, DS.Sp.l)
+            .padding(.bottom, DS.Sp.m)
 
-            Divider().opacity(0.5)
+            Divider()
 
             // Nav items
-            VStack(alignment: .leading, spacing: 4) {
-                Text("NAVIGATION")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(DS.C.tertiaryLabel)
-                    .padding(.horizontal, DS.Sp.s)
-                    .padding(.bottom, DS.Sp.xs)
-
+            VStack(alignment: .leading, spacing: 1) {
                 ForEach(AppState.Section.allCases) { sec in
                     sidebarItem(sec)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.top, DS.Sp.l)
+            .padding(.horizontal, DS.Sp.s)
+            .padding(.top, DS.Sp.s)
 
             Spacer(minLength: 0)
-
-            // Footer status
-            VStack(alignment: .leading, spacing: 8) {
-                Divider().opacity(0.5)
-
-                HStack(spacing: 8) {
-                    SquircleIcon(
-                        symbol: "server.rack",
-                        color: state.routerStatus == .ready ? DS.C.success : DS.C.warning,
-                        size: 22,
-                        inner: 10,
-                        radius: 6
-                    )
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("9Router")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text(state.routerStatus == .ready ? "Gateway ready" : "Gateway offline")
-                            .font(.system(size: 10))
-                            .foregroundStyle(DS.C.secondaryLabel)
-                    }
-                    Spacer(minLength: 0)
-                    Text("\(state.readyProxiesCount)/\(max(state.proxies.count, 1))")
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(DS.C.tertiaryLabel)
-                        .help("Proxies ready / configured")
-                }
-                .padding(.horizontal, DS.Sp.m)
-                .padding(.vertical, 10)
-            }
         }
-        .background(DS.C.controlBackground.opacity(0.55))
-        .background {
-            if #available(macOS 26, *) {
-                GlassFill(cornerRadius: 0)
-            }
-        }
+        .background(GlassFill(level: .regular, cornerRadius: 0, stroke: true))
     }
 
     private func sidebarItem(_ sec: AppState.Section) -> some View {
@@ -3514,40 +3568,23 @@ struct Sidebar: View {
         return Button {
             state.selectedSection = sec
         } label: {
-            HStack(spacing: 11) {
-                SquircleIcon(
-                    symbol: sec.icon,
-                    color: selected ? DS.C.brand : DS.C.tertiaryLabel.opacity(0.85),
-                    size: 28,
-                    inner: 13,
-                    radius: 7
-                )
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(sec.rawValue)
-                        .font(.system(size: 13, weight: selected ? .semibold : .medium))
-                        .foregroundStyle(selected ? DS.C.label : DS.C.secondaryLabel)
-                    Text(sec.subtitle)
-                        .font(.system(size: 10))
-                        .foregroundStyle(DS.C.tertiaryLabel)
-                }
+            HStack(spacing: 10) {
+                Image(systemName: sec.icon)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(selected ? DS.C.brand : DS.C.secondaryLabel)
+                    .frame(width: 18)
+                Text(sec.rawValue)
+                    .font(selected ? DS.Typo.rowTitle : DS.Typo.body)
+                    .foregroundStyle(selected ? DS.C.label : DS.C.secondaryLabel)
                 Spacer(minLength: 0)
-                if selected {
-                    Circle()
-                        .fill(DS.C.brand)
-                        .frame(width: 6, height: 6)
-                }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
+            .padding(.horizontal, DS.Sp.m)
+            .padding(.vertical, 7)
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(selected ? DS.C.brand.opacity(0.14) : Color.clear)
+                RoundedRectangle(cornerRadius: DS.Rad.m, style: .continuous)
+                    .fill(selected ? DS.C.fillSelected : Color.clear)
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(selected ? DS.C.brand.opacity(0.28) : Color.clear, lineWidth: 1)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: DS.Rad.m, style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -3582,41 +3619,43 @@ struct CursorDetailsSheet: View {
         VStack(spacing: 0) {
             HStack {
                 Text("Cursor")
-                    .font(.system(size: 15, weight: .bold))
+                    .font(DS.Typo.sectionTitle)
+                    .foregroundStyle(DS.C.label)
                 Spacer()
                 Button("Đóng") { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.horizontal, DS.Sp.l)
+            .padding(.vertical, DS.Sp.m)
             Divider()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: DS.Sp.l) {
                     SettingsCard {
-                        VStack(alignment: .leading, spacing: 14) {
-                            HStack(alignment: .center, spacing: 14) {
+                        VStack(alignment: .leading, spacing: DS.Sp.m) {
+                            HStack(alignment: .center, spacing: DS.Sp.m) {
                                 ZStack {
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .fill((state.pathHealth.cursorPathOk ? Color.green : Color.orange).opacity(isOn ? 0.15 : 0.08))
+                                    RoundedRectangle(cornerRadius: DS.Rad.l, style: .continuous)
+                                        .fill((state.pathHealth.cursorPathOk ? DS.C.success : DS.C.warning).opacity(isOn ? 0.15 : 0.08))
                                         .frame(width: 48, height: 48)
                                     Image(systemName: state.pathHealth.cursorPathOk ? "checkmark.circle.fill" : "link.circle.fill")
                                         .font(.system(size: 22, weight: .semibold))
-                                        .foregroundStyle(isOn ? (state.pathHealth.cursorPathOk ? Color.green : Color.orange) : Color(nsColor: .tertiaryLabelColor))
+                                        .foregroundStyle(isOn ? (state.pathHealth.cursorPathOk ? DS.C.success : DS.C.warning) : DS.C.tertiaryLabel)
                                 }
 
-                                VStack(alignment: .leading, spacing: 3) {
+                                VStack(alignment: .leading, spacing: DS.Sp.xxs) {
                                     Text(headline)
-                                        .font(.system(size: 16, weight: .bold))
+                                        .font(DS.Typo.rowTitle)
+                                        .foregroundStyle(DS.C.label)
                                     Text(subtitle)
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                                        .font(DS.Typo.caption)
+                                        .foregroundStyle(DS.C.secondaryLabel)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                                 Spacer(minLength: 0)
                             }
 
-                            HStack(spacing: 8) {
+                            HStack(spacing: DS.Sp.s) {
                                 Button {
                                     state.refreshCursorBridge(force: true)
                                 } label: {
@@ -3656,17 +3695,17 @@ struct CursorDetailsSheet: View {
 
                             if let ms = state.cursorLatencyMs {
                                 Text("Latency lần test gần nhất: \(ms) ms")
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                                    .font(DS.Typo.mono)
+                                    .foregroundStyle(DS.C.secondaryLabel)
                             }
 
                             if !state.cursorApplyMessage.isEmpty {
                                 Text(state.cursorApplyMessage)
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(state.pathHealth.cursorConfigured ? Color.green : Color.orange)
+                                    .font(DS.Typo.small)
+                                    .foregroundStyle(state.pathHealth.cursorConfigured ? DS.C.success : DS.C.warning)
                             }
                         }
-                        .padding(16)
+                        .padding(DS.Sp.l)
                     }
 
                     SettingsCard(header: "Checklist") {
@@ -3704,12 +3743,12 @@ struct CursorDetailsSheet: View {
                     }
 
                     SettingsCard(header: "Thông tin kết nối") {
-                        VStack(alignment: .leading, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .leading, spacing: DS.Sp.m) {
+                            VStack(alignment: .leading, spacing: DS.Sp.s) {
                                 Text("Model đang áp dụng (Cursor)")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
-                                HStack(spacing: 8) {
+                                    .font(DS.Typo.small)
+                                    .foregroundStyle(DS.C.secondaryLabel)
+                                HStack(spacing: DS.Sp.s) {
                                     Picker("", selection: Binding(
                                         get: {
                                             let cur = state.cursorAppliedCombo.isEmpty ? "my-combo" : state.cursorAppliedCombo
@@ -3725,12 +3764,12 @@ struct CursorDetailsSheet: View {
                                     .disabled(state.cursorApplyBusy || !state.bridgeStatus.isReady)
                                     Spacer(minLength: 0)
                                 }
-                                .padding(10)
-                                .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
-                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .padding(DS.Sp.m)
+                                .background(DS.C.surfaceInset)
+                                .clipShape(RoundedRectangle(cornerRadius: DS.Rad.s, style: .continuous))
                                 Text("Đổi ở đây mới ghi vào Cursor — chọn combo ở Overview chỉ để xem.")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                                    .font(DS.Typo.monoMicro)
+                                    .foregroundStyle(DS.C.tertiaryLabel)
                             }
 
                             bridgeCopyRow(
@@ -3753,45 +3792,46 @@ struct CursorDetailsSheet: View {
                                 state.copy(state.nineRouterApiKey, notice: "Đã copy API key")
                             }
                         }
-                        .padding(14)
+                        .padding(DS.Sp.m)
                     }
                 }
-                .padding(16)
+                .padding(DS.Sp.l)
             }
         }
         .frame(minWidth: 540, minHeight: 560)
         .onAppear { state.refreshCursorBridge(force: true) }
         .overlay(alignment: .bottom) {
-            ToastStackView().padding(.bottom, 12)
+            ToastStackView().padding(.bottom, DS.Sp.m)
         }
     }
 
     private func bridgeCheckRow(title: String, ok: Bool, detail: String) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DS.Sp.m) {
             Image(systemName: ok ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(ok ? Color.green : Color(nsColor: .tertiaryLabelColor))
+                .foregroundStyle(ok ? DS.C.success : DS.C.tertiaryLabel)
                 .font(.system(size: 16))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 13, weight: .semibold))
+            VStack(alignment: .leading, spacing: DS.Sp.xxs) {
+                Text(title).font(DS.Typo.rowTitle).foregroundStyle(DS.C.label)
                 Text(detail)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    .font(DS.Typo.small)
+                    .foregroundStyle(DS.C.secondaryLabel)
             }
             Spacer()
-            StatusPill(text: ok ? "OK" : "Chưa", color: ok ? .green : .orange)
+            StatusPill(text: ok ? "OK" : "Chưa", color: ok ? DS.C.success : DS.C.warning)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, DS.Sp.l)
+        .padding(.vertical, DS.Sp.m)
     }
 
     private func bridgeCopyRow(title: String, value: String, canCopy: Bool, onCopy: @escaping () -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: DS.Sp.s) {
             Text(title)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Color(nsColor: .secondaryLabelColor))
-            HStack(spacing: 8) {
+                .font(DS.Typo.small)
+                .foregroundStyle(DS.C.secondaryLabel)
+            HStack(spacing: DS.Sp.s) {
                 Text(value)
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(DS.Typo.mono)
+                    .foregroundStyle(DS.C.label)
                     .textSelection(.enabled)
                     .lineLimit(2)
                 Spacer()
@@ -3800,9 +3840,377 @@ struct CursorDetailsSheet: View {
                     .controlSize(.small)
                     .disabled(!canCopy)
             }
-            .padding(10)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .padding(DS.Sp.m)
+            .background(DS.C.surfaceInset)
+            .clipShape(RoundedRectangle(cornerRadius: DS.Rad.s, style: .continuous))
+        }
+    }
+}
+
+// MARK: - Gateway Details Sheet (opened from Overview)
+
+struct GatewayDetailsSheet: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
+
+    private var isOnline: Bool { state.routerStatus == .ready }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("9Router Gateway")
+                    .font(DS.Typo.sectionTitle)
+                    .foregroundStyle(DS.C.label)
+                Spacer()
+                Button("Đóng") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, DS.Sp.l)
+            .padding(.vertical, DS.Sp.m)
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: DS.Sp.l) {
+                    SettingsCard {
+                        VStack(alignment: .leading, spacing: DS.Sp.m) {
+                            HStack(alignment: .center, spacing: DS.Sp.m) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: DS.Rad.l, style: .continuous)
+                                        .fill((isOnline ? DS.C.success : DS.C.warning).opacity(0.15))
+                                        .frame(width: 48, height: 48)
+                                    Image(systemName: isOnline ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                                        .font(.system(size: 22, weight: .semibold))
+                                        .foregroundStyle(isOnline ? DS.C.success : DS.C.warning)
+                                }
+
+                                VStack(alignment: .leading, spacing: DS.Sp.xxs) {
+                                    Text(isOnline ? "Gateway đang hoạt động" : "Gateway đang tắt")
+                                        .font(DS.Typo.rowTitle)
+                                        .foregroundStyle(DS.C.label)
+                                    Text(isOnline ? "Cổng 20128 đang lắng nghe và sẵn sàng định tuyến AI models." : "Khởi động Gateway để bắt đầu định tuyến các yêu cầu AI.")
+                                        .font(DS.Typo.caption)
+                                        .foregroundStyle(DS.C.secondaryLabel)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Spacer(minLength: 0)
+                            }
+
+                            HStack(spacing: DS.Sp.s) {
+                                Button {
+                                    state.restart()
+                                } label: {
+                                    Label("Khởi động lại", systemImage: "arrow.clockwise")
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(state.isBusy)
+
+                                Button {
+                                    state.openDashboard()
+                                } label: {
+                                    Label("Mở Dashboard", systemImage: "safari")
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(!isOnline)
+
+                                Spacer()
+                            }
+                        }
+                        .padding(DS.Sp.l)
+                    }
+
+                    SettingsCard(header: "Thông tin kết nối Gateway") {
+                        VStack(alignment: .leading, spacing: DS.Sp.m) {
+                            gatewayCopyRow(
+                                title: "Local Endpoint (API Base)",
+                                value: "http://127.0.0.1:20128/v1",
+                                canCopy: true
+                            ) {
+                                state.copy("http://127.0.0.1:20128/v1", notice: "Đã copy API Endpoint")
+                            }
+
+                            gatewayCopyRow(
+                                title: "Dashboard URL",
+                                value: "http://127.0.0.1:20128/dashboard",
+                                canCopy: true
+                            ) {
+                                state.copy("http://127.0.0.1:20128/dashboard", notice: "Đã copy Dashboard URL")
+                            }
+
+                            gatewayCopyRow(
+                                title: "API Key",
+                                value: state.nineRouterApiKey.isEmpty ? "Chưa có API key" : state.maskedNineRouterApiKey,
+                                canCopy: !state.nineRouterApiKey.isEmpty
+                            ) {
+                                state.copy(state.nineRouterApiKey, notice: "Đã copy API Key")
+                            }
+                        }
+                        .padding(DS.Sp.m)
+                    }
+                }
+                .padding(DS.Sp.l)
+            }
+        }
+        .frame(minWidth: 500, minHeight: 460)
+        .overlay(alignment: .bottom) {
+            ToastStackView().padding(.bottom, DS.Sp.m)
+        }
+    }
+
+    private func gatewayCopyRow(title: String, value: String, canCopy: Bool, onCopy: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: DS.Sp.s) {
+            Text(title)
+                .font(DS.Typo.small)
+                .foregroundStyle(DS.C.secondaryLabel)
+            HStack(spacing: DS.Sp.s) {
+                Text(value)
+                    .font(DS.Typo.mono)
+                    .foregroundStyle(DS.C.label)
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+                Spacer()
+                Button("Copy", action: onCopy)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(!canCopy)
+            }
+            .padding(DS.Sp.m)
+            .background(DS.C.surfaceInset)
+            .clipShape(RoundedRectangle(cornerRadius: DS.Rad.s, style: .continuous))
+        }
+    }
+}
+
+// MARK: - Proxies Details Sheet (opened from Overview)
+
+struct ProxiesDetailsSheet: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Local Proxies (\(state.readyProxiesCount)/\(state.proxies.count) Online)")
+                    .font(DS.Typo.sectionTitle)
+                    .foregroundStyle(DS.C.label)
+                Spacer()
+                Button("Đóng") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, DS.Sp.l)
+            .padding(.vertical, DS.Sp.m)
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: DS.Sp.l) {
+                    SettingsCard(header: "Danh sách Proxies") {
+                        if state.proxies.isEmpty {
+                            Text("Chưa có proxy nào được cấu hình.")
+                                .font(DS.Typo.caption)
+                                .foregroundStyle(DS.C.secondaryLabel)
+                                .padding(DS.Sp.l)
+                        } else {
+                            VStack(spacing: 0) {
+                                ForEach(Array(state.proxies.enumerated()), id: \.element.id) { index, proxy in
+                                    HStack(spacing: DS.Sp.m) {
+                                        SquircleIcon(symbol: proxy.iconName, color: AppState.Section.proxies.accentColor, size: 32, inner: 15, radius: DS.Rad.s)
+
+                                        VStack(alignment: .leading, spacing: DS.Sp.xxs) {
+                                            HStack(spacing: DS.Sp.xs) {
+                                                Text(proxy.name)
+                                                    .font(DS.Typo.rowTitle)
+                                                    .foregroundStyle(DS.C.label)
+                                                CodeBadge(text: ":\(proxy.port)")
+                                            }
+                                            Text("http://127.0.0.1:\(proxy.port)/v1")
+                                                .font(DS.Typo.mono)
+                                                .foregroundStyle(DS.C.secondaryLabel)
+                                        }
+
+                                        Spacer(minLength: 0)
+
+                                        if let latency = proxy.latency {
+                                            Text("\(latency) ms")
+                                                .font(DS.Typo.monoMicro)
+                                                .foregroundStyle(DS.C.secondaryLabel)
+                                        }
+
+                                        StatusPill(
+                                            text: proxy.enabled ? (proxy.status == .ready ? "Running" : "Offline") : "Off",
+                                            color: proxy.enabled && proxy.status == .ready ? DS.C.success : DS.C.warning
+                                        )
+
+                                        Button {
+                                            state.testProxy(proxy)
+                                        } label: {
+                                            Image(systemName: "bolt.horizontal")
+                                                .font(.system(size: 11))
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                        .help("Test kết nối Proxy")
+
+                                        Button {
+                                            state.copy("http://127.0.0.1:\(proxy.port)/v1", notice: "Đã copy URL \(proxy.name)")
+                                        } label: {
+                                            Image(systemName: "doc.on.doc")
+                                                .font(.system(size: 11))
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                        .help("Copy Endpoint")
+
+                                        Toggle("", isOn: Binding(
+                                            get: { proxy.enabled },
+                                            set: { _ in
+                                                var updated = proxy
+                                                updated.enabled.toggle()
+                                                state.updateProxy(updated)
+                                            }
+                                        ))
+                                        .toggleStyle(.switch)
+                                        .controlSize(.mini)
+                                        .labelsHidden()
+                                    }
+                                    .padding(.horizontal, DS.Sp.l)
+                                    .padding(.vertical, DS.Sp.m)
+
+                                    if index < state.proxies.count - 1 {
+                                        Divider().padding(.leading, 56)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(DS.Sp.l)
+            }
+        }
+        .frame(minWidth: 540, minHeight: 440)
+        .overlay(alignment: .bottom) {
+            ToastStackView().padding(.bottom, DS.Sp.m)
+        }
+    }
+}
+
+// MARK: - Runtime Details Sheet (opened from Overview)
+
+struct RuntimeDetailsSheet: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
+
+    private var allReady: Bool {
+        state.envReadyCount == state.envItems.count && !state.envItems.isEmpty
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Runtime & Dependencies (\(state.envReadyCount)/\(state.envItems.count))")
+                    .font(DS.Typo.sectionTitle)
+                    .foregroundStyle(DS.C.label)
+                Spacer()
+                Button("Đóng") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, DS.Sp.l)
+            .padding(.vertical, DS.Sp.m)
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: DS.Sp.l) {
+                    SettingsCard {
+                        HStack(spacing: DS.Sp.m) {
+                            Image(systemName: allReady ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                                .font(.system(size: 26))
+                                .foregroundStyle(allReady ? DS.C.success : DS.C.warning)
+
+                            VStack(alignment: .leading, spacing: DS.Sp.xxs) {
+                                Text(allReady ? "Môi trường đầy đủ và sẵn sàng" : "Thiếu dependencies cần thiết")
+                                    .font(DS.Typo.rowTitle)
+                                    .foregroundStyle(DS.C.label)
+                                Text("Bao gồm Homebrew, Node.js, 9Router, Go, Git, Tailscale.")
+                                    .font(DS.Typo.caption)
+                                    .foregroundStyle(DS.C.secondaryLabel)
+                            }
+
+                            Spacer()
+
+                            Button {
+                                state.checkEnvironment(force: true)
+                            } label: {
+                                Label("Kiểm tra lại", systemImage: "arrow.clockwise")
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button {
+                                state.runBootstrap()
+                            } label: {
+                                if state.isBusy {
+                                    Label("Đang cài…", systemImage: "hourglass")
+                                } else {
+                                    Label("Tự động cài đặt", systemImage: "wrench.and.screwdriver.fill")
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(state.isBusy)
+                        }
+                        .padding(DS.Sp.l)
+                    }
+
+                    SettingsCard(header: "Chi tiết các gói Runtime (\(state.envItems.count))") {
+                        VStack(spacing: 0) {
+                            ForEach(Array(state.envItems.enumerated()), id: \.element.id) { index, item in
+                                HStack(spacing: DS.Sp.m) {
+                                    SquircleIcon(
+                                        symbol: item.iconName,
+                                        color: item.isReady ? DS.C.success : DS.C.warning,
+                                        size: 32,
+                                        inner: 15,
+                                        radius: DS.Rad.s
+                                    )
+
+                                    VStack(alignment: .leading, spacing: DS.Sp.xxs) {
+                                        Text(item.name)
+                                            .font(DS.Typo.rowTitle)
+                                            .foregroundStyle(DS.C.label)
+                                        Text(item.statusDescription)
+                                            .font(DS.Typo.small)
+                                            .foregroundStyle(DS.C.secondaryLabel)
+                                    }
+
+                                    Spacer()
+
+                                    VStack(alignment: .trailing, spacing: DS.Sp.xxs) {
+                                        Text(item.installed)
+                                            .font(DS.Typo.mono)
+                                            .foregroundStyle(DS.C.label)
+                                        Text("Required: \(item.required)")
+                                            .font(DS.Typo.monoMicro)
+                                            .foregroundStyle(DS.C.secondaryLabel)
+                                    }
+
+                                    StatusPill(
+                                        text: item.isReady ? "Ready" : "Missing",
+                                        color: item.isReady ? DS.C.success : DS.C.warning
+                                    )
+                                }
+                                .padding(.horizontal, DS.Sp.l)
+                                .padding(.vertical, DS.Sp.m)
+
+                                if index < state.envItems.count - 1 {
+                                    Divider().padding(.leading, 56)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(DS.Sp.l)
+            }
+        }
+        .frame(minWidth: 520, minHeight: 480)
+        .onAppear { state.checkEnvironment(force: true) }
+        .overlay(alignment: .bottom) {
+            ToastStackView().padding(.bottom, DS.Sp.m)
         }
     }
 }
@@ -3816,29 +4224,22 @@ struct OverviewView: View {
         GeometryReader { geo in
             let pad: CGFloat = DS.Sp.l
             let gap: CGFloat = DS.Sp.m
-            let colW = geo.size.width - pad * 2 - gap
+            let availableWidth = geo.size.width - pad * 2 - gap
+            let rightColumnWidth = min(480, max(380, availableWidth * 0.38))
+
             HStack(alignment: .top, spacing: gap) {
-                // Cột trái (2/3): Topology trên + status/stats/services dưới
-                VStack(alignment: .leading, spacing: DS.Sp.m) {
-                    OverviewGraphCard()
-                        .frame(minHeight: 260)
-                        .frame(maxHeight: geo.size.height * 0.52)
-
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: DS.Sp.m) {
-                            compactHero
-                            compactStats
-                            activeServicesCard
-                        }
-                        .padding(.bottom, DS.Sp.s)
-                    }
+                OverviewGraphCard()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                // Cột phải: log chiếm phần trên, dock dịch vụ cố định dưới cùng.
+                VStack(alignment: .leading, spacing: gap) {
+                    OverviewRecentCard()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .layoutPriority(1)
+
+                    bottomDock
                 }
-                .frame(width: colW * (2.0 / 3.0))
-
-                // Cột phải (1/3): Recent Requests chạy suốt chiều cao
-                OverviewRecentCard()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(width: rightColumnWidth)
             }
             .padding(pad)
         }
@@ -3850,306 +4251,327 @@ struct OverviewView: View {
             CursorDetailsSheet()
                 .environmentObject(state)
         }
-    }
-
-    // MARK: - Hero
-
-    private var compactHero: some View {
-        SettingsCard {
-            HStack(spacing: DS.Sp.m) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: DS.Rad.s, style: .continuous)
-                        .fill(heroTint.opacity(0.16))
-                        .frame(width: 34, height: 34)
-                    Image(systemName: state.overallReady ? "checkmark.shield.fill" : "exclamationmark.triangle.fill")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(heroTint)
-                }
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 7) {
-                        Text(state.statusHeadline)
-                            .font(.system(size: 14, weight: .semibold))
-                        Circle()
-                            .fill(state.overallReady ? DS.C.success : DS.C.warning)
-                            .frame(width: 7, height: 7)
-                    }
-                    Text(state.statusDetailLine)
-                        .font(.system(size: 11))
-                        .foregroundStyle(DS.C.secondaryLabel)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: DS.Sp.s)
-                HStack(spacing: 6) {
-                    Button { state.restart() } label: {
-                        Image(systemName: "arrow.clockwise").frame(width: 14, height: 14)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(state.isBusy)
-                    .help("Làm mới / restart dịch vụ")
-
-                    if !state.isManuallyStopped {
-                        Button { state.stopAll() } label: {
-                            Image(systemName: "stop.fill").foregroundStyle(DS.C.danger).frame(width: 14, height: 14)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(state.isBusy)
-                        .help("Dừng toàn bộ dịch vụ")
-                    } else {
-                        Button { state.startAll() } label: {
-                            Image(systemName: "play.fill").foregroundStyle(DS.C.success).frame(width: 14, height: 14)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(state.isBusy)
-                        .help("Start lại dịch vụ")
-                    }
-                }
-            }
-            .padding(.horizontal, DS.Sp.l)
-            .padding(.vertical, 10)
+        .sheet(isPresented: $state.showGatewayDetails) {
+            GatewayDetailsSheet()
+                .environmentObject(state)
+        }
+        .sheet(isPresented: $state.showProxiesDetails) {
+            ProxiesDetailsSheet()
+                .environmentObject(state)
+        }
+        .sheet(isPresented: $state.showRuntimeDetails) {
+            RuntimeDetailsSheet()
+                .environmentObject(state)
         }
     }
 
-    private var heroTint: Color {
-        state.overallReady ? DS.C.success : DS.C.warning
+    // MARK: - Bottom dock (stats + services, cố định dưới cùng)
+
+    private var bottomDock: some View {
+        VStack(spacing: DS.Sp.m) {
+            compactStatsRow
+            servicesList
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
-    // MARK: - Stats
-
-    private var compactStats: some View {
-        SettingsCard(header: "System Overview") {
-            HStack(spacing: 0) {
-                overviewStatTile(
-                    title: "9Router Gateway",
-                    value: state.routerStatus == .ready ? "Online" : "Offline",
-                    badgeText: "Port 20128",
-                    badgeColor: state.routerStatus == .ready ? DS.C.success : DS.C.warning,
-                    icon: "server.rack"
-                )
-                Divider().padding(.vertical, DS.Sp.s)
-                overviewStatTile(
-                    title: "Local Proxies",
-                    value: "\(state.readyProxiesCount) of \(state.proxies.count) ready",
-                    badgeText: "\(state.proxies.count) configured",
-                    badgeColor: DS.C.brand,
-                    icon: "antenna.radiowaves.left.and.right"
-                )
-                Divider().padding(.vertical, DS.Sp.s)
-                overviewStatTile(
-                    title: "Runtime Environment",
-                    value: "\(state.envReadyCount) of \(state.envItems.count) ready",
-                    badgeText: state.envReadyCount == state.envItems.count && !state.envItems.isEmpty ? "Complete" : "Setup needed",
-                    badgeColor: state.envReadyCount == state.envItems.count && !state.envItems.isEmpty ? DS.C.success : DS.C.warning,
-                    icon: "cube.fill"
-                )
+    private var compactStatsRow: some View {
+        HStack(spacing: DS.Sp.s) {
+            overviewStatCard(
+                title: "Gateway",
+                status: state.routerStatus == .ready ? "Online" : "Offline",
+                color: state.routerStatus == .ready ? DS.C.success : DS.C.warning,
+                icon: "server.rack"
+            ) {
+                state.showGatewayDetails = true
             }
-            .padding(.vertical, 6)
+
+            overviewStatCard(
+                title: "Proxies",
+                status: "\(state.readyProxiesCount)/\(state.proxies.count) Active",
+                color: state.readyProxiesCount > 0 ? DS.C.brand : DS.C.warning,
+                icon: "antenna.radiowaves.left.and.right"
+            ) {
+                state.showProxiesDetails = true
+            }
+
+            overviewStatCard(
+                title: "Runtime",
+                status: "\(state.envReadyCount)/\(state.envItems.count) Ready",
+                color: state.envReadyCount == state.envItems.count && !state.envItems.isEmpty ? DS.C.success : DS.C.warning,
+                icon: "cube.fill"
+            ) {
+                state.showRuntimeDetails = true
+            }
         }
     }
 
-    private func overviewStatTile(
+    private func overviewStatCard(
         title: String,
-        value: String,
-        badgeText: String,
-        badgeColor: Color,
-        icon: String
+        status: String,
+        color: Color,
+        icon: String,
+        action: @escaping () -> Void
     ) -> some View {
-        HStack(spacing: 10) {
-            SquircleIcon(symbol: icon, color: badgeColor, size: 30, inner: 13, radius: 8)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(DS.C.secondaryLabel)
-                    .lineLimit(1)
-                HStack(spacing: 6) {
-                    Text(value)
-                        .font(.system(size: 12.5, weight: .semibold))
+        Button(action: action) {
+            HStack(spacing: 7) {
+                SquircleIcon(symbol: icon, color: color, size: 28, inner: 13, radius: 7)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(DS.C.label)
                         .lineLimit(1)
-                    Text(badgeText)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(badgeColor)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(badgeColor.opacity(0.12))
-                        .clipShape(Capsule())
+                        .minimumScaleFactor(0.85)
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(color)
+                            .frame(width: 5, height: 5)
+                        Text(status)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(color)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
                 }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(DS.C.tertiaryLabel)
             }
-            Spacer(minLength: 0)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 9)
+            .background(DS.C.controlBackground)
+            .clipShape(RoundedRectangle(cornerRadius: DS.Rad.l, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.Rad.l, style: .continuous)
+                    .strokeBorder(DS.C.separator.opacity(0.35), lineWidth: 0.8)
+            )
         }
-        .padding(.horizontal, DS.Sp.m)
-        .padding(.vertical, DS.Sp.s)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
     }
 
-    private var activeServicesCard: some View {
-        SettingsCard(header: "Active Services") {
-            VStack(spacing: 0) {
-                // 1. Cursor
-                serviceRow(
-                    icon: cursorOverviewIcon,
-                    color: cursorOverviewIconColor,
-                    title: "Cursor",
-                    subtitle: cursorOverviewSubtitle,
-                    statusText: {
-                        if state.testingCursor { return "Testing" }
-                        if let ok = state.cursorTestOk { return ok ? "Running" : "Fail" }
-                        return cursorServicePillText
-                    }(),
-                    statusColor: {
-                        if let ok = state.cursorTestOk { return ok ? DS.C.success : DS.C.warning }
-                        return cursorServicePillColor
-                    }()
-                ) {
-                    if state.cursorApplyBusy { ProgressView().controlSize(.small) }
-                    serviceComboPicker(
-                        selection: Binding(get: { resolvedCombo(state.cursorAppliedCombo) }, set: { state.applyComboToCursor($0) }),
-                        disabled: state.cursorApplyBusy || state.routerStatus != .ready || !(state.bridgeStatus.wanted || state.bridgeStatus.isReady)
-                    )
-                    Toggle("", isOn: Binding(
-                        get: { state.bridgeStatus.wanted || state.bridgeStatus.isReady },
-                        set: { state.setCursorBridgeEnabled($0) }
-                    ))
-                    .toggleStyle(.switch).labelsHidden()
-                    .disabled(state.bridgeBusy || state.bridgeSetupRunning || state.routerStatus != .ready)
-                    moreMenu {
-                        Button {
-                            state.testCursor()
-                        } label: {
-                            Label("Test Connection", systemImage: "bolt.horizontal")
-                        }
-                        .disabled(state.testingCursor || state.routerStatus != .ready || !(state.bridgeStatus.wanted || state.bridgeStatus.isReady))
-
-                        Button {
-                            state.showCursorDetails = true
-                        } label: {
-                            Label("Cursor Details", systemImage: "info.circle")
-                        }
-                    }
+    private var servicesList: some View {
+        VStack(spacing: 0) {
+            // 1. Cursor
+            serviceRow(
+                icon: cursorOverviewIcon,
+                color: cursorOverviewIconColor,
+                title: "Cursor",
+                comboName: resolvedCombo(state.cursorAppliedCombo),
+                statusText: {
+                    if state.testingCursor { return "Testing" }
+                    if let ok = state.cursorTestOk { return ok ? "Running" : "Fail" }
+                    return cursorServicePillText
+                }(),
+                statusColor: {
+                    if let ok = state.cursorTestOk { return ok ? DS.C.success : DS.C.warning }
+                    return cursorServicePillColor
+                }()
+            ) {
+                Button {
+                    state.testCursor()
+                } label: {
+                    Label("Test Connection", systemImage: "bolt.horizontal")
                 }
+                .disabled(state.testingCursor || state.routerStatus != .ready || !(state.bridgeStatus.wanted || state.bridgeStatus.isReady))
 
-                // 2. Codex
-                serviceRow(
-                    icon: "terminal.fill",
-                    color: DS.C.brand,
-                    title: "Codex",
-                    subtitle: "Local terminal agent",
-                    statusText: state.testingCodex ? "Testing" : (state.codexTestOk == false ? "Fail" : (state.routerStatus == .ready ? "Running" : "Offline")),
-                    statusColor: state.codexTestOk == false ? DS.C.warning : (state.routerStatus == .ready ? DS.C.success : DS.C.warning),
-                    showDivider: true
-                ) {
-                    if state.codexApplyBusy { ProgressView().controlSize(.small) }
-                    serviceComboPicker(
-                        selection: Binding(get: { resolvedCombo(state.codexAppliedCombo) }, set: { state.applyComboToCodex($0) }),
-                        disabled: state.codexApplyBusy || state.routerStatus != .ready
-                    )
-                    moreMenu {
-                        Button {
-                            state.testCodex()
-                        } label: {
-                            Label("Test Connection", systemImage: "bolt.horizontal")
-                        }
-                        .disabled(state.testingCodex || state.routerStatus != .ready)
-
-                        Button {
-                            state.copy("http://127.0.0.1:20128/v1")
-                        } label: {
-                            Label("Copy API Endpoint", systemImage: "doc.on.doc")
-                        }
-                    }
+                Button {
+                    state.setCursorBridgeEnabled(!(state.bridgeStatus.wanted || state.bridgeStatus.isReady))
+                } label: {
+                    Label((state.bridgeStatus.wanted || state.bridgeStatus.isReady) ? "Tắt Cursor Bridge" : "Bật Cursor Bridge", systemImage: "power")
                 }
+                .disabled(state.bridgeBusy || state.bridgeSetupRunning || state.routerStatus != .ready)
 
-                // 3. 9Router
-                serviceRow(
-                    icon: "server.rack",
-                    color: DS.C.brand,
-                    title: "9Router Gateway",
-                    subtitle: "Routing gateway",
-                    statusText: state.routerStatus == .ready ? "Running" : "Offline",
-                    statusColor: state.routerStatus == .ready ? DS.C.success : DS.C.warning,
-                    showDivider: true
-                ) {
-                    moreMenu {
+                Menu("Đổi Combo Model") {
+                    ForEach(serviceComboOptions, id: \.self) { model in
                         Button {
-                            state.copy("http://127.0.0.1:20128")
+                            state.applyComboToCursor(model)
                         } label: {
-                            Label("Copy API Endpoint", systemImage: "doc.on.doc")
-                        }
-
-                        Button {
-                            state.openDashboard()
-                        } label: {
-                            Label("Open Dashboard", systemImage: "safari")
-                        }
-                        .disabled(state.routerStatus != .ready)
-                    }
-                }
-
-                // 4. Proxies
-                ForEach(state.proxies) { proxy in
-                    serviceRow(
-                        icon: proxy.iconName,
-                        color: DS.C.brand,
-                        title: proxy.name,
-                        subtitle: "Local endpoint",
-                        statusText: proxy.enabled ? (proxy.status == .ready ? "Running" : "Offline") : "Off",
-                        statusColor: proxy.enabled && proxy.status == .ready ? DS.C.success : DS.C.warning,
-                        showDivider: true
-                    ) {
-                        moreMenu {
-                            Button {
-                                state.testProxy(proxy)
-                            } label: {
-                                Label("Test Connection", systemImage: "bolt.horizontal")
-                            }
-
-                            Button {
-                                state.copy("http://127.0.0.1:\(proxy.port)/v1")
-                            } label: {
-                                Label("Copy API Endpoint", systemImage: "doc.on.doc")
+                            HStack {
+                                Text(model)
+                                if resolvedCombo(state.cursorAppliedCombo) == model {
+                                    Image(systemName: "checkmark")
+                                }
                             }
                         }
+                    }
+                }
+                .disabled(state.cursorApplyBusy || state.routerStatus != .ready || !(state.bridgeStatus.wanted || state.bridgeStatus.isReady))
+
+                Divider()
+
+                Button {
+                    state.showCursorDetails = true
+                } label: {
+                    Label("Cursor Details", systemImage: "info.circle")
+                }
+            }
+
+            Divider().padding(.leading, 42)
+
+            // 2. Codex
+            serviceRow(
+                icon: "terminal.fill",
+                color: DS.C.brand,
+                title: "Codex",
+                comboName: resolvedCombo(state.codexAppliedCombo),
+                statusText: state.testingCodex ? "Testing" : (state.codexTestOk == false ? "Fail" : (state.routerStatus == .ready ? "Running" : "Offline")),
+                statusColor: state.codexTestOk == false ? DS.C.warning : (state.routerStatus == .ready ? DS.C.success : DS.C.warning)
+            ) {
+                Button {
+                    state.testCodex()
+                } label: {
+                    Label("Test Connection", systemImage: "bolt.horizontal")
+                }
+                .disabled(state.testingCodex || state.routerStatus != .ready)
+
+                Menu("Đổi Combo Model") {
+                    ForEach(serviceComboOptions, id: \.self) { model in
+                        Button {
+                            state.applyComboToCodex(model)
+                        } label: {
+                            HStack {
+                                Text(model)
+                                if resolvedCombo(state.codexAppliedCombo) == model {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+                .disabled(state.codexApplyBusy || state.routerStatus != .ready)
+
+                Divider()
+
+                Button {
+                    state.copy("http://127.0.0.1:20128/v1", notice: "Đã copy Codex Endpoint")
+                } label: {
+                    Label("Copy API Endpoint", systemImage: "doc.on.doc")
+                }
+            }
+
+            Divider().padding(.leading, 42)
+
+            // 3. 9Router
+            serviceRow(
+                icon: "server.rack",
+                color: DS.C.brand,
+                title: "9Router",
+                comboName: nil,
+                statusText: state.routerStatus == .ready ? "Running" : "Offline",
+                statusColor: state.routerStatus == .ready ? DS.C.success : DS.C.warning
+            ) {
+                Button {
+                    state.showGatewayDetails = true
+                } label: {
+                    Label("Gateway Details", systemImage: "info.circle")
+                }
+
+                Button {
+                    state.openDashboard()
+                } label: {
+                    Label("Open Dashboard", systemImage: "safari")
+                }
+                .disabled(state.routerStatus != .ready)
+
+                Divider()
+
+                Button {
+                    state.copy("http://127.0.0.1:20128", notice: "Đã copy 9Router URL")
+                } label: {
+                    Label("Copy API Endpoint", systemImage: "doc.on.doc")
+                }
+            }
+
+            // 4. Proxies
+            ForEach(state.proxies) { proxy in
+                Divider().padding(.leading, 42)
+                serviceRow(
+                    icon: proxy.iconName,
+                    color: Color(red: 0.38, green: 0.34, blue: 0.93),
+                    title: proxy.name,
+                    comboName: nil,
+                    statusText: proxy.enabled ? (proxy.status == .ready ? "Running" : "Offline") : "Off",
+                    statusColor: proxy.enabled && proxy.status == .ready ? DS.C.success : DS.C.warning
+                ) {
+                    Button {
+                        state.testProxy(proxy)
+                    } label: {
+                        Label("Test Connection", systemImage: "bolt.horizontal")
+                    }
+
+                    Button {
+                        var updated = proxy
+                        updated.enabled.toggle()
+                        state.updateProxy(updated)
+                    } label: {
+                        Label(proxy.enabled ? "Disable Proxy" : "Enable Proxy", systemImage: "power")
+                    }
+
+                    Divider()
+
+                    Button {
+                        state.copy("http://127.0.0.1:\(proxy.port)/v1", notice: "Đã copy \(proxy.name) URL")
+                    } label: {
+                        Label("Copy API Endpoint", systemImage: "doc.on.doc")
+                    }
+
+                    Button {
+                        state.showProxiesDetails = true
+                    } label: {
+                        Label("Proxy Manager", systemImage: "info.circle")
                     }
                 }
             }
         }
+        .background(DS.C.controlBackground)
+        .clipShape(RoundedRectangle(cornerRadius: DS.Rad.l, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Rad.l, style: .continuous)
+                .strokeBorder(DS.C.separator.opacity(0.35), lineWidth: 0.8)
+        )
     }
 
     @ViewBuilder
-    private func serviceRow<Actions: View>(
+    private func serviceRow<MenuItems: View>(
         icon: String,
         color: Color,
         title: String,
-        subtitle: String,
+        comboName: String? = nil,
         statusText: String,
         statusColor: Color,
-        showDivider: Bool = false,
-        @ViewBuilder actions: () -> Actions
+        @ViewBuilder menuItems: () -> MenuItems
     ) -> some View {
-        VStack(spacing: 0) {
-            if showDivider {
-                Divider().padding(.leading, 52)
+        HStack(spacing: 10) {
+            SquircleIcon(symbol: icon, color: color, size: 28, inner: 13, radius: 7)
+
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(DS.C.label)
+                .lineLimit(1)
+
+            if let combo = comboName {
+                Text(combo)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(DS.C.secondaryLabel)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(DS.C.surfaceInset.opacity(0.8))
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .lineLimit(1)
             }
-            HStack(spacing: DS.Sp.m) {
-                SquircleIcon(symbol: icon, color: color, size: 28, inner: 12, radius: 7)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(DS.C.label)
-                    Text(subtitle)
-                        .font(.system(size: 11))
-                        .foregroundStyle(DS.C.secondaryLabel)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Spacer(minLength: DS.Sp.m)
-                StatusPill(text: statusText, color: statusColor)
-                actions()
+
+            Spacer(minLength: 4)
+
+            StatusPill(text: statusText, color: statusColor)
+
+            moreMenu {
+                menuItems()
             }
-            .padding(.horizontal, DS.Sp.m)
-            .padding(.vertical, 10)
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
     }
 
     private func moreMenu(@ViewBuilder content: () -> some View) -> some View {
@@ -4157,9 +4579,9 @@ struct OverviewView: View {
             content()
         } label: {
             Image(systemName: "ellipsis.circle")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(DS.C.secondaryLabel)
-                .frame(width: 22, height: 22)
+                .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
@@ -4184,7 +4606,8 @@ struct OverviewView: View {
             }
         }
         .labelsHidden()
-        .frame(maxWidth: 130)
+        .frame(maxWidth: 100)
+        .controlSize(.small)
         .disabled(disabled)
     }
 
@@ -4235,74 +4658,108 @@ struct UsagePeriodPicker: View {
     let onSelect: (UsagePeriod) -> Void
 
     var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 3) {
             ForEach(UsagePeriod.allCases) { p in
                 Button {
                     onSelect(p)
                 } label: {
                     Text(p.label)
-                        .font(.system(size: 11, weight: period == p ? .semibold : .medium))
+                        .font(.system(size: 13, weight: period == p ? .semibold : .medium))
                         .foregroundStyle(period == p ? DS.C.chartOnDarkPrimary : DS.C.chartOnDarkTertiary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 7)
                         .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .fill(period == p ? DS.C.chartOnDarkPrimary.opacity(0.14) : Color.clear)
                         )
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(3)
+        .padding(4)
         .background(DS.C.chartOnDarkPrimary.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
-/// Thanh filter + REQ/IN/OUT/COST — Equatable để stats đổi không kéo redraw graph nặng.
+/// Thanh filter + REQ/IN/OUT/COST + nút điều hành — Equatable để stats đổi không kéo redraw graph nặng.
 struct OverviewUsageMetricsBar: View, Equatable {
     let period: UsagePeriod
     let stats: UsageStats
     let onSelect: (UsagePeriod) -> Void
+    let onRestart: () -> Void
+    let onToggle: () -> Void
+    let isManuallyStopped: Bool
+    let busy: Bool
 
     static func == (lhs: OverviewUsageMetricsBar, rhs: OverviewUsageMetricsBar) -> Bool {
         lhs.period == rhs.period && lhs.stats == rhs.stats
+            && lhs.isManuallyStopped == rhs.isManuallyStopped
+            && lhs.busy == rhs.busy
     }
 
     var body: some View {
-        VStack(spacing: 6) {
-            HStack {
-                Spacer(minLength: 0)
-                UsagePeriodPicker(period: period, onSelect: onSelect)
-                Spacer(minLength: 0)
-            }
+        HStack(spacing: 10) {
+            UsagePeriodPicker(period: period, onSelect: onSelect)
+                .fixedSize()
 
-            HStack(spacing: 6) {
+            Rectangle()
+                .fill(DS.C.chartOnDarkPrimary.opacity(0.10))
+                .frame(width: 1, height: 36)
+
+            HStack(spacing: 8) {
                 miniMetric("REQ", "\(stats.requests)", DS.C.chartOnDarkPrimary)
                 miniMetric("IN", ComboFormat.tokens(stats.promptTokens), DS.C.warning)
                 miniMetric("OUT", ComboFormat.tokens(stats.completionTokens), DS.C.success)
                 miniMetric("COST", ComboFormat.cost(stats.cost), DS.C.chartCost)
             }
+
+            Spacer(minLength: 6)
+
+            actionButton("arrow.clockwise", DS.C.chartOnDarkPrimary, DS.C.chartOnDarkPrimary.opacity(0.10), "Restart services", onRestart)
+            if isManuallyStopped {
+                actionButton("play.fill", DS.C.success, DS.C.success.opacity(0.16), "Start services", onToggle)
+            } else {
+                actionButton("pause.fill", DS.C.danger, DS.C.danger.opacity(0.16), "Pause services", onToggle)
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.bottom, 6)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    private func actionButton(_ icon: String, _ tint: Color, _ background: Color, _ help: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 44, height: 36)
+                .background(background)
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .opacity(busy ? 0.55 : 1)
+        .help(help)
     }
 
     private func miniMetric(_ title: String, _ value: String, _ color: Color) -> some View {
-        VStack(spacing: 2) {
+        HStack(spacing: 7) {
             Text(title)
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: 11.5, weight: .bold))
+                .tracking(0.4)
                 .foregroundStyle(DS.C.chartOnDarkTertiary)
             Text(value)
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .font(.system(size: 14.5, weight: .semibold, design: .monospaced))
                 .foregroundStyle(color)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(0.65)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 6)
-        .background(DS.C.chartOnDarkPrimary.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .padding(.horizontal, 11)
+        .padding(.vertical, 10)
+        .background(DS.C.chartOnDarkPrimary.opacity(0.045))
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 }
 
@@ -4337,82 +4794,59 @@ struct OverviewGraphCard: View {
         return .yellow
     }
 
-    private var topologySourceCaption: String {
-        if state.bridgeStatus.wanted {
-            let live = !usage.activeUsageProviders.isEmpty || !usage.activeUsageModels.isEmpty
-            if live { return "· LIVE (request tới 9Router)" }
-            if !topology.pathHealth.cursorPathOk {
-                return "· Cursor chưa tới 9Router (Network Error?)"
-            }
-            return "· chờ request Cursor/IDE"
-        }
-        return topologyProviders.contains(where: \.live) ? "· live probe" : "· cache API"
-    }
+    // MARK: - Trạng thái hệ thống
 
     var body: some View {
-        SettingsCard(header: "Provider Topology") {
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Text(providerTopologyRatio)
-                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(providerTopologyRatioColor)
-
-                    Text(topologySourceCaption)
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
-
-                    Spacer(minLength: 0)
-
-                    if topology.healthProbeBusy { ProgressView().controlSize(.mini) }
-
-                    Button {
-                        state.refreshStatusNow(live: true)
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(topology.healthProbeBusy || state.routerStatus != .ready)
-                    .help("Làm mới trạng thái provider")
+        VStack(spacing: 0) {
+            ZStack {
+                if state.routerStatus != .ready {
+                    Text("Bật 9Router để xem topology")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                } else if topologyProviders.isEmpty {
+                    Text(topology.healthProbeBusy ? "Đang tải…" : "Chưa có provider")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                } else {
+                    ComboTopologyGraph(
+                        comboName: "9Router",
+                        providers: topologyProviders,
+                        recentUsage: usage.recentUsage,
+                        activeProviders: usage.activeUsageProviders,
+                        activeModels: usage.activeUsageModels,
+                        lastProvider: usage.lastUsageProvider,
+                        errorProvider: usage.errorUsageProvider,
+                        onOpenDashboard: state.routerStatus == .ready ? { state.openDashboard() } : nil,
+                        onRefresh: { state.refreshStatusNow(live: true) },
+                        statusHeadline: state.statusHeadline,
+                        statusDetailLine: state.statusDetailLine,
+                        overallReady: state.overallReady,
+                        providerRatio: providerTopologyRatio,
+                        providerRatioColor: providerTopologyRatioColor
+                    )
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-
-                OverviewUsageMetricsBar(
-                    period: usage.usagePeriod,
-                    stats: usage.usageStats,
-                    onSelect: { state.setUsagePeriod($0) }
-                )
-                .equatable()
-
-                ZStack {
-                    if state.routerStatus != .ready {
-                        Text("Bật 9Router để xem topology")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color(nsColor: .secondaryLabelColor))
-                    } else if topologyProviders.isEmpty {
-                        Text(topology.healthProbeBusy ? "Đang tải…" : "Chưa có provider")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color(nsColor: .secondaryLabelColor))
-                    } else {
-                        ComboTopologyGraph(
-                            comboName: "9Router",
-                            providers: topologyProviders,
-                            recentUsage: usage.recentUsage,
-                            activeProviders: usage.activeUsageProviders,
-                            activeModels: usage.activeUsageModels,
-                            lastProvider: usage.lastUsageProvider,
-                            errorProvider: usage.errorUsageProvider
-                        )
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(DS.C.chartSurface)
-                .clipShape(RoundedRectangle(cornerRadius: 0))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(DS.C.chartSurface)
+
+            OverviewUsageMetricsBar(
+                period: usage.usagePeriod,
+                stats: usage.usageStats,
+                onSelect: { state.setUsagePeriod($0) },
+                onRestart: { state.restart() },
+                onToggle: { state.isManuallyStopped ? state.startAll() : state.stopAll() },
+                isManuallyStopped: state.isManuallyStopped,
+                busy: state.isBusy
+            )
+            .equatable()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(DS.C.chartSurface)
+        .clipShape(RoundedRectangle(cornerRadius: DS.Rad.l, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Rad.l, style: .continuous)
+                .strokeBorder(DS.C.separator.opacity(0.35), lineWidth: 0.8)
+        )
     }
 }
 
@@ -4429,28 +4863,75 @@ struct OverviewRecentCard: View {
     }
 
     var body: some View {
-        SettingsCard(header: "Recent Requests") {
-            VStack(alignment: .leading, spacing: 0) {
+        VStack(spacing: 0) {
+            // Header card
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(DS.C.brand)
+                    Text("RECENT ACTIVITY")
+                        .font(.system(size: 10.5, weight: .bold))
+                        .tracking(0.6)
+                        .foregroundStyle(DS.C.chartOnDarkSecondary)
+                }
+
+                Spacer()
+
+                if !usage.recentUsage.isEmpty {
+                    Text("\(usage.recentUsage.count) requests")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(DS.C.chartOnDarkTertiary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(DS.C.chartOnDarkPrimary.opacity(0.06))
+                        .clipShape(Capsule())
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(DS.C.chartOnDarkPrimary.opacity(0.02))
+
+            Divider()
+                .background(Color.white.opacity(0.08))
+
+            // Body list
+            Group {
                 if usage.recentUsage.isEmpty {
-                    Text("Chưa có request.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(DS.C.secondaryLabel)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    VStack(spacing: 6) {
+                        Image(systemName: "tray")
+                            .font(.system(size: 20))
+                            .foregroundStyle(DS.C.chartOnDarkTertiary.opacity(0.6))
+                        Text("Chưa có request gần đây")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(DS.C.chartOnDarkTertiary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.vertical, 20)
                 } else {
                     ScrollView {
-                        LazyVStack(spacing: 1) {
-                            ForEach(usage.recentUsage.prefix(6)) { row in
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(usage.recentUsage.enumerated()), id: \.element.id) { index, row in
                                 recentRow(row)
+                                if index < usage.recentUsage.count - 1 {
+                                    Divider()
+                                        .background(Color.white.opacity(0.05))
+                                        .padding(.horizontal, 12)
+                                }
                             }
                         }
-                        .padding(.vertical, 2)
+                        .padding(.vertical, 4)
                     }
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(DS.C.chartSurface)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(DS.C.chartSurface)
+        .clipShape(RoundedRectangle(cornerRadius: DS.Rad.l, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Rad.l, style: .continuous)
+                .strokeBorder(DS.C.separator.opacity(0.35), lineWidth: 0.8)
+        )
     }
 
     private func recentRow(_ row: UsageRequestItem) -> some View {
@@ -4461,35 +4942,38 @@ struct OverviewRecentCard: View {
                 .fill(ok ? DS.C.success : DS.C.warning)
                 .frame(width: 6, height: 6)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1.5) {
                 Text(row.model)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(DS.C.chartOnDarkPrimary)
                     .lineLimit(1)
-                HStack(spacing: 6) {
-                    Text(row.provider)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(DS.C.chartOnDarkSecondary)
-                        .lineLimit(1)
-                    Text("·")
-                        .foregroundStyle(DS.C.chartOnDarkSecondary)
+
+                Text(row.provider)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(DS.C.chartOnDarkSecondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 6)
+
+            VStack(alignment: .trailing, spacing: 2) {
+                HStack(spacing: 4) {
                     Text("\(ComboFormat.tokens(row.promptTokens))↑")
                         .foregroundStyle(DS.C.warning)
                     Text("\(ComboFormat.tokens(row.completionTokens))↓")
                         .foregroundStyle(DS.C.success)
                 }
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+
+                Text(ComboFormat.relativeTime(row.timestamp))
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(DS.C.chartOnDarkTertiary)
             }
-
-            Spacer(minLength: 4)
-
-            Text(ComboFormat.relativeTime(row.timestamp))
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .foregroundStyle(DS.C.chartOnDarkTertiary)
         }
-        .padding(.horizontal, DS.Sp.m)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
         .background(hit ? DS.C.warning.opacity(0.08) : Color.clear)
+        .contentShape(Rectangle())
     }
 
     private func matches(_ model: String) -> Bool {
@@ -4687,6 +5171,13 @@ struct ComboTopologyGraph: View {
     let activeModels: Set<String>
     let lastProvider: String
     let errorProvider: String
+    var onOpenDashboard: (() -> Void)? = nil
+    var onRefresh: (() -> Void)? = nil
+    var statusHeadline: String = ""
+    var statusDetailLine: String = ""
+    var overallReady: Bool = true
+    var providerRatio: String = ""
+    var providerRatioColor: Color = .green
 
     @State private var zoom: CGFloat = 1.0
     @State private var cachedNodes: [Node] = []
@@ -4791,17 +5282,27 @@ struct ComboTopologyGraph: View {
             )
             let center = CGPoint(x: size.width / 2, y: size.height / 2)
             let list = cachedNodes
-            let pillW: CGFloat = list.count >= 10 ? 118 : 128
-            let pillH: CGFloat = list.contains(where: { !$0.model.isEmpty }) ? 42 : 34
-            let spots = layoutSpots(count: list.count, size: size, zoom: zoom, pillW: pillW, pillH: pillH)
-            let hubInset: CGFloat = 32
-            let nodeInset: CGFloat = pillW * 0.45
+            let pillH: CGFloat = 48
+            let pillWidths = list.map { pillWidth(for: $0) }
+            let hubHalfW: CGFloat = 88
+            let hubHalfH: CGFloat = 28
+            let spots = layoutSpots(
+                count: list.count,
+                size: size,
+                zoom: zoom,
+                pillWidths: pillWidths,
+                pillH: pillH,
+                hubHalfW: hubHalfW,
+                hubHalfH: hubHalfH
+            )
             let edges = buildEdges(
                 list: list,
                 spots: spots,
                 center: center,
-                hubInset: hubInset,
-                nodeInset: nodeInset
+                hubHalfW: hubHalfW,
+                hubHalfH: hubHalfH,
+                pillWidths: pillWidths,
+                pillH: pillH
             )
             let needsMotion = list.contains { $0.activity == .live }
 
@@ -4824,7 +5325,7 @@ struct ComboTopologyGraph: View {
                 }
 
                 ForEach(Array(list.enumerated()), id: \.element.id) { idx, n in
-                    pill(n)
+                    pill(n, width: pillWidths[idx])
                         .position(spots[idx])
                         .help(n.help)
                 }
@@ -4832,11 +5333,19 @@ struct ComboTopologyGraph: View {
                 hub(glow: anyLive || list.contains { $0.activity == .warm || $0.activity == .error }).position(center)
 
                 VStack(spacing: 6) {
+                    if let onOpenDashboard {
+                        zoomBtn("safari") { onOpenDashboard() }
+                            .help("Mở 9Router Dashboard")
+                    }
+                    if let onRefresh {
+                        zoomBtn("arrow.clockwise") { onRefresh() }
+                            .help("Làm mới trạng thái provider")
+                    }
                     zoomBtn("plus") { zoom = min(1.35, zoom + 0.08) }
                     zoomBtn("minus") { zoom = max(0.55, zoom - 0.08) }
                     zoomBtn("arrow.up.left.and.arrow.down.right") { zoom = 1 }
                 }
-                .position(x: 26, y: size.height - 58)
+                .position(x: 26, y: size.height - (57 + (onRefresh != nil ? 16 : 0) + (onOpenDashboard != nil ? 16 : 0)))
             }
             .frame(width: size.width, height: size.height)
         }
@@ -4852,15 +5361,21 @@ struct ComboTopologyGraph: View {
         list: [Node],
         spots: [CGPoint],
         center: CGPoint,
-        hubInset: CGFloat,
-        nodeInset: CGFloat
+        hubHalfW: CGFloat,
+        hubHalfH: CGFloat,
+        pillWidths: [CGFloat],
+        pillH: CGFloat
     ) -> [EdgeGeometry] {
+        let nodeHalfH = pillH / 2
         var edges: [EdgeGeometry] = []
         edges.reserveCapacity(list.count)
         for (idx, n) in list.enumerated() {
             guard idx < spots.count else { continue }
-            let (a, b) = edgeAnchor(from: center, to: spots[idx], fromInset: hubInset, toInset: nodeInset)
-            let (c1, c2) = cubicControls(from: a, to: b, hub: center)
+            let target = spots[idx]
+            let nodeHalfW = idx < pillWidths.count ? pillWidths[idx] / 2 : 59
+            let (a, hubNorm) = hubSideAnchor(hub: center, target: target, hubHalfW: hubHalfW, hubHalfH: hubHalfH)
+            let (b, cardNorm) = cardSideAnchor(card: target, hub: center, halfW: nodeHalfW, halfH: nodeHalfH)
+            let (c1, c2) = smoothEdgeCurve(from: a, fromNormal: hubNorm, to: b, toNormal: cardNorm)
             var path = Path()
             path.move(to: a)
             path.addCurve(to: b, control1: c1, control2: c2)
@@ -4908,69 +5423,353 @@ struct ComboTopologyGraph: View {
     private func liveEdgesCanvas(edges: [EdgeGeometry], size: CGSize, phase: TimeInterval) -> some View {
         Canvas { ctx, _ in
             let liveColor = Color(red: 0.20, green: 0.88, blue: 0.78)
-            let dashPhase = CGFloat(phase * -30)
-            for edge in edges where edge.node.activity == .live {
-                ctx.stroke(edge.path, with: .color(liveColor.opacity(0.18)), lineWidth: 5.5)
-                ctx.stroke(
-                    edge.path,
-                    with: .color(liveColor),
-                    style: StrokeStyle(lineWidth: 1.9, lineCap: .round, dash: [5.5, 7.5], dashPhase: dashPhase)
-                )
 
-                // Dot nhỏ chạy dọc theo cung để giữ cảm giác "live" nhưng nhẹ GPU hơn glow lớn.
-                let t = CGFloat((phase * 0.4 + Double(edge.index) * 0.17).truncatingRemainder(dividingBy: 1))
-                let pt = cubic(edge.from, edge.control1, edge.control2, edge.to, t)
-                let dot = Path(ellipseIn: CGRect(x: pt.x - 2.0, y: pt.y - 2.0, width: 4.0, height: 4.0))
-                ctx.fill(dot, with: .color(liveColor))
+            // Vầng sáng tụ lại ở hub — nền rất nhẹ.
+            let hubSum = edges.reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.from.x, y: $0.y + $1.from.y) }
+            let n = max(CGFloat(edges.count), 1)
+            let hubC = CGPoint(x: hubSum.x / n, y: hubSum.y / n)
+            let hubBloom: CGFloat = 22 + 4 * CGFloat(sin(phase * 2.4))
+            ctx.fill(
+                Path(ellipseIn: CGRect(x: hubC.x - hubBloom, y: hubC.y - hubBloom, width: hubBloom * 2, height: hubBloom * 2)),
+                with: .radialGradient(
+                    Gradient(colors: [liveColor.opacity(0.10), liveColor.opacity(0)]),
+                    center: hubC, startRadius: 0, endRadius: hubBloom
+                )
+            )
+
+            let sampleCount = 50
+
+            for edge in edges where edge.node.activity == .live {
+                // 1. Base connection — to gấp 3: hạ tầng rõ hơn khi có luồng chạy.
+                ctx.stroke(edge.path, with: .color(liveColor.opacity(0.10)), lineWidth: 12)
+                ctx.stroke(edge.path, with: .color(liveColor.opacity(0.22)), lineWidth: 3)
+
+                // Mẫu điểm dọc đường cong: pts[0] = provider, pts[sampleCount] = hub.
+                var pts: [CGPoint] = []
+                pts.reserveCapacity(sampleCount + 1)
+                for i in 0...sampleCount {
+                    let t = 1 - CGFloat(i) / CGFloat(sampleCount)
+                    pts.append(cubic(edge.from, edge.control1, edge.control2, edge.to, t))
+                }
+
+                let flowSpeed = 0.65
+                let edgePhase = Double(edge.index) * 0.13
+
+                // 2. Dense particle stream: 35 hạt dày đặc, chạy liên tục Provider → Hub.
+                let particleCount = 35
+                let basePhase = phase * flowSpeed + edgePhase
+
+                for p in 0..<particleCount {
+                    // Phân bố dày — mỗi hạt cách nhau ~0.028 trên thang progress.
+                    let slot = Double(p) * 0.028 + Double(p % 7) * 0.0006
+                    var raw = Double(basePhase) + slot
+                    raw = raw.truncatingRemainder(dividingBy: 1)
+
+                    // Vị trí trên đường cong: 0 = provider, 1 = hub.
+                    let pos = CGFloat(raw)
+                    let idx = min(Int(pos * CGFloat(sampleCount)), sampleCount)
+                    let pt = pts[idx]
+
+                    // Hash deterministic cho từng hạt — kích thước, độ sáng, nhịp khác nhau.
+                    let hash = seededUnit(edge.index * 997 + p * 131)
+
+                    // Kích thước: 1.5–3.3px, đa dạng.
+                    let size: CGFloat = 1.4 + hash * 1.9
+
+                    // Độ sáng cốt lõi: 0.25–0.95, một số hạt sáng hơn hẳn.
+                    let coreBright: CGFloat = 0.25 + hash * 0.70
+                    // Đỉnh sáng nhấp nháy nhẹ.
+                    let flicker = 0.82 + 0.18 * CGFloat(sin(phase * (6.0 + hash * 9.0) + Double(p) * 2.3))
+
+                    // Fade-in gần provider (0–0.04), fade-out gần hub (0.96–1).
+                    let fadeIn = min(1, pos / 0.04)
+                    let fadeOut = min(1, (1 - pos) / 0.06)
+                    let opacity = min(fadeIn, fadeOut) * coreBright * flicker
+                    guard opacity > 0.03 else { continue }
+
+                    // Một số hạt ngẫu nhiên có glow loang nhẹ.
+                    let hasGlow = hash > 0.55
+                    if hasGlow {
+                        let glowR: CGFloat = 3.0 + hash * 4.0
+                        ctx.fill(
+                            Path(ellipseIn: CGRect(x: pt.x - glowR, y: pt.y - glowR, width: glowR * 2, height: glowR * 2)),
+                            with: .radialGradient(
+                                Gradient(colors: [liveColor.opacity(0.35 * opacity), liveColor.opacity(0)]),
+                                center: pt, startRadius: 0, endRadius: glowR
+                            )
+                        )
+                    }
+
+                    // Lõi hạt — teal thuần, chỉ chia sáng/tối.
+                    let isWhite = hash > 0.92
+                    if isWhite {
+                        ctx.fill(
+                            Path(ellipseIn: CGRect(x: pt.x - size * 0.55, y: pt.y - size * 0.55, width: size * 1.1, height: size * 1.1)),
+                            with: .color(Color(red: 0.75, green: 1.0, blue: 0.98).opacity(0.9 * opacity))
+                        )
+                    } else {
+                        ctx.fill(
+                            Path(ellipseIn: CGRect(x: pt.x - size * 0.5, y: pt.y - size * 0.5, width: size, height: size)),
+                            with: .color(liveColor.opacity(0.65 * opacity))
+                        )
+                    }
+                }
+
+                // 3. Glow stream mờ — vệt sáng dạng khói dọc đường để các hạt hòa trộn.
+                let glowPhase = CGFloat((phase * flowSpeed + edgePhase).truncatingRemainder(dividingBy: 1))
+                let glowLen: CGFloat = 0.28
+                for i in 0..<sampleCount {
+                    let uCenter = (CGFloat(i) + 0.5) / CGFloat(sampleCount)
+                    var d = glowPhase - uCenter
+                    if d < 0 { d += 1 }
+                    guard d < glowLen else { continue }
+                    let intensity = 1 - d / glowLen
+                    var seg = Path()
+                    seg.move(to: pts[i])
+                    seg.addLine(to: pts[i + 1])
+                    ctx.stroke(seg, with: .color(liveColor.opacity(0.08 + intensity * 0.20)), lineWidth: 3 + intensity * 5)
+                }
+
+                // 4. Vòng loang nhẹ khi dữ liệu chạm hub.
+                let arr = CGFloat((phase * flowSpeed + edgePhase).truncatingRemainder(dividingBy: 1))
+                let a = CGFloat(min(max((arr - 0.84) / 0.16, 0), 1))
+                if a > 0 {
+                    let ringR: CGFloat = 3 + a * 12
+                    let ringGrad = Gradient(colors: [liveColor.opacity(0.35 * (1 - a)), liveColor.opacity(0)])
+                    ctx.stroke(
+                        Path(ellipseIn: CGRect(x: edge.from.x - ringR, y: edge.from.y - ringR, width: ringR * 2, height: ringR * 2)),
+                        with: .radialGradient(ringGrad, center: CGPoint(x: edge.from.x, y: edge.from.y), startRadius: 0, endRadius: ringR),
+                        lineWidth: 1.4
+                    )
+                }
             }
         }
         .frame(width: size.width, height: size.height)
         .allowsHitTesting(false)
     }
 
-    /// Một vòng quanh tâm (kiểu 9Router): góc đều, bán kính tự theo số node để không đè.
-    private func layoutSpots(count: Int, size: CGSize, zoom: CGFloat, pillW: CGFloat, pillH: CGFloat) -> [CGPoint] {
-        let n = max(count, 1)
-        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+    /// Góc trên vòng tròn — chia theo bề ngang card để khoảng cách cung đủ rộng.
+    private func ringAngles(count: Int, widths: [CGFloat], gap: CGFloat) -> [CGFloat] {
+        guard count > 0 else { return [] }
+        if count == 1 { return [-CGFloat.pi / 2] }
 
-        let maxRx = max(56, size.width / 2 - pillW / 2 - 18) * zoom
-        let maxRy = max(48, size.height / 2 - pillH / 2 - 16) * zoom
-
-        // Bán kính tối thiểu để khoảng cách 2 node kề ≥ bề ngang card + gap
-        let gap: CGFloat = 14
-        let needR: CGFloat = n <= 1 ? 0 : (pillW + gap) / (2 * sin(.pi / CGFloat(n)))
-
-        // Ellipse ngang nhẹ; luôn 1 vòng — ưu tiên đủ chỗ (needR), không vượt khung.
-        var rx = min(maxRx, max(needR, maxRx * 0.78))
-        var ry = min(maxRy, max(needR * 0.82, maxRy * 0.78))
-        if needR > 0 {
-            rx = min(maxRx, max(rx, needR))
-            ry = min(maxRy, max(ry, needR * 0.85))
+        var spans: [CGFloat] = []
+        spans.reserveCapacity(count)
+        for i in 0..<count {
+            let j = (i + 1) % count
+            spans.append((widths[i] + widths[j]) / 2 + gap)
         }
-        // Thu nhẹ để không sát mép
-        rx = min(rx, maxRx * 0.96)
-        ry = min(ry, maxRy * 0.96)
+        let total = max(spans.reduce(0, +), 1)
+        var angles: [CGFloat] = []
+        angles.reserveCapacity(count)
+        var cur = -CGFloat.pi / 2
+        for i in 0..<count {
+            angles.append(cur)
+            cur += 2 * CGFloat.pi * spans[i] / total
+        }
+        return angles
+    }
 
+    /// Bán kính tối thiểu cho một vòng tròn với góc đã cho.
+    private func minRadiusForRing(
+        angles: [CGFloat],
+        widths: [CGFloat],
+        gap: CGFloat,
+        pillHalfH: CGFloat,
+        hubHalfW: CGFloat,
+        hubHalfH: CGFloat
+    ) -> CGFloat {
+        let count = angles.count
+        guard count > 0 else { return 0 }
+        if count == 1 {
+            return max(hubHalfW, hubHalfH) + widths[0] / 2 + 36
+        }
+
+        var needR: CGFloat = 0
+        for i in 0..<count {
+            let j = (i + 1) % count
+            var dAng = angles[j] - angles[i]
+            if dAng <= 0 { dAng += 2 * CGFloat.pi }
+            dAng = max(dAng, 0.08)
+            let chordNeed = (widths[i] + widths[j]) / 2 + gap
+            needR = max(needR, chordNeed / (2 * sin(dAng / 2)))
+
+            let ang = angles[i]
+            let horizFactor = abs(cos(ang))
+            let vertFactor = abs(sin(ang))
+            let radialPad = widths[i] / 2 * horizFactor + pillHalfH * vertFactor + 10
+            needR = max(needR, max(hubHalfW, hubHalfH) + radialPad + 28)
+        }
+        return needR
+    }
+
+    /// Đặt node lên vòng tròn — mỗi node giữ đúng góc, bán kính có thể khác nhau nhẹ.
+    private func placeOnRing(
+        angles: [CGFloat],
+        baseRadius: CGFloat,
+        center: CGPoint,
+        widths: [CGFloat]
+    ) -> [CGPoint] {
+        let count = angles.count
+        guard count > 0 else { return [] }
+        let avgW = widths.reduce(0, +) / CGFloat(max(count, 1))
         var spots: [CGPoint] = []
-        spots.reserveCapacity(n)
-        let phase = -CGFloat.pi / 2 // đỉnh vòng = node đầu
-        for i in 0..<n {
-            let ang = phase + 2 * CGFloat.pi * CGFloat(i) / CGFloat(n)
-            spots.append(CGPoint(x: center.x + cos(ang) * rx, y: center.y + sin(ang) * ry))
+        spots.reserveCapacity(count)
+        for i in 0..<count {
+            let radialBoost = max(0, (widths[i] - avgW) * 0.18)
+            let r = baseRadius + radialBoost
+            spots.append(CGPoint(x: center.x + cos(angles[i]) * r, y: center.y + sin(angles[i]) * r))
         }
         return spots
     }
 
-    /// Điểm neo line: lùi khỏi tâm hub / tâm card → đường nối vào mép như 9Router.
-    private func edgeAnchor(from: CGPoint, to: CGPoint, fromInset: CGFloat, toInset: CGFloat) -> (CGPoint, CGPoint) {
-        let dx = to.x - from.x
-        let dy = to.y - from.y
-        let len = max(hypot(dx, dy), 1)
-        let ux = dx / len
-        let uy = dy / len
-        let a = CGPoint(x: from.x + ux * fromInset, y: from.y + uy * fromInset)
-        let b = CGPoint(x: to.x - ux * toInset, y: to.y - uy * toInset)
-        return (a, b)
+    /// Giữ hình tròn: chỉ tăng bán kính dọc tia từ hub, không lệch góc.
+    private func resolveRadialCollisions(
+        spots: inout [CGPoint],
+        angles: [CGFloat],
+        widths: [CGFloat],
+        pillHalfH: CGFloat,
+        center: CGPoint,
+        gap: CGFloat
+    ) {
+        let n = spots.count
+        guard n > 1, angles.count == n else { return }
+        let pad = gap / 2
+        var radii = (0..<n).map { hypot(spots[$0].x - center.x, spots[$0].y - center.y) }
+
+        for _ in 0..<14 {
+            var moved = false
+            for i in 0..<n {
+                spots[i] = CGPoint(
+                    x: center.x + cos(angles[i]) * radii[i],
+                    y: center.y + sin(angles[i]) * radii[i]
+                )
+            }
+            for i in 0..<n {
+                for j in (i + 1)..<n {
+                    let dx = abs(spots[i].x - spots[j].x)
+                    let dy = abs(spots[i].y - spots[j].y)
+                    let needX = widths[i] / 2 + widths[j] / 2 + pad
+                    let needY = pillHalfH + pillHalfH + pad
+                    guard dx < needX, dy < needY else { continue }
+
+                    let overlap = min(needX - dx, needY - dy)
+                    let push = overlap * 0.55 + 1.2
+                    radii[i] += push * 0.5
+                    radii[j] += push * 0.5
+                    moved = true
+                }
+            }
+            if !moved { break }
+        }
+
+        for i in 0..<n {
+            spots[i] = CGPoint(
+                x: center.x + cos(angles[i]) * radii[i],
+                y: center.y + sin(angles[i]) * radii[i]
+            )
+        }
+    }
+
+    /// Một vòng tròn quanh hub — góc theo bề ngang card, bán kính tự co giãn.
+    private func layoutSpots(
+        count: Int,
+        size: CGSize,
+        zoom: CGFloat,
+        pillWidths: [CGFloat],
+        pillH: CGFloat,
+        hubHalfW: CGFloat,
+        hubHalfH: CGFloat
+    ) -> [CGPoint] {
+        let n = max(count, 1)
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        let widths = pillWidths.isEmpty ? Array(repeating: CGFloat(118), count: n) : pillWidths
+        let maxW = widths.max() ?? 118
+        let pillHalfH = pillH / 2
+        let gap: CGFloat = 16
+        let margin: CGFloat = 12
+
+        let boundRx = max(56, size.width / 2 - maxW / 2 - margin) * zoom
+        let boundRy = max(48, size.height / 2 - pillHalfH - margin) * zoom
+        let boundR = min(boundRx, boundRy) * 0.96
+
+        let angles = ringAngles(count: n, widths: widths, gap: gap)
+        let needR = minRadiusForRing(
+            angles: angles,
+            widths: widths,
+            gap: gap,
+            pillHalfH: pillHalfH,
+            hubHalfW: hubHalfW,
+            hubHalfH: hubHalfH
+        )
+
+        // Ưu tiên vòng tròn đầy: dùng hết bán kính khả dụng, chỉ thu nhỏ khi thật sự cần.
+        let R = needR <= boundR
+            ? max(needR, boundR * 0.62)
+            : boundR
+
+        var spots = placeOnRing(angles: angles, baseRadius: R, center: center, widths: widths)
+        resolveRadialCollisions(
+            spots: &spots,
+            angles: angles,
+            widths: widths,
+            pillHalfH: pillHalfH,
+            center: center,
+            gap: gap
+        )
+        return spots
+    }
+
+    /// Điểm gốc line trên hub — giữa 1 trong 4 cạnh + pháp tuyến hướng ra ngoài.
+    private func hubSideAnchor(
+        hub: CGPoint,
+        target: CGPoint,
+        hubHalfW: CGFloat,
+        hubHalfH: CGFloat
+    ) -> (CGPoint, CGPoint) {
+        let dx = target.x - hub.x
+        let dy = target.y - hub.y
+        if abs(dy) * hubHalfW >= abs(dx) * hubHalfH {
+            let outward = dy < 0 ? CGPoint(x: 0, y: -1) : CGPoint(x: 0, y: 1)
+            let pt = CGPoint(x: hub.x, y: hub.y + (dy < 0 ? -hubHalfH : hubHalfH))
+            return (pt, outward)
+        }
+        let outward = dx < 0 ? CGPoint(x: -1, y: 0) : CGPoint(x: 1, y: 0)
+        let pt = CGPoint(x: hub.x + (dx < 0 ? -hubHalfW : hubHalfW), y: hub.y)
+        return (pt, outward)
+    }
+
+    /// Điểm cuối line trên card con — giữa cạnh đối diện hub + pháp tuyến hướng về hub.
+    private func cardSideAnchor(
+        card: CGPoint,
+        hub: CGPoint,
+        halfW: CGFloat,
+        halfH: CGFloat
+    ) -> (CGPoint, CGPoint) {
+        let dx = hub.x - card.x
+        let dy = hub.y - card.y
+        if abs(dy) * halfW >= abs(dx) * halfH {
+            let towardHub = dy < 0 ? CGPoint(x: 0, y: -1) : CGPoint(x: 0, y: 1)
+            let pt = CGPoint(x: card.x, y: card.y + (dy < 0 ? -halfH : halfH))
+            return (pt, towardHub)
+        }
+        let towardHub = dx < 0 ? CGPoint(x: -1, y: 0) : CGPoint(x: 1, y: 0)
+        let pt = CGPoint(x: card.x + (dx < 0 ? -halfW : halfW), y: card.y)
+        return (pt, towardHub)
+    }
+
+    /// Bézier mềm edge-to-edge — control point theo pháp tuyến 2 đầu, kiểu 9Router.
+    private func smoothEdgeCurve(
+        from a: CGPoint,
+        fromNormal fn: CGPoint,
+        to b: CGPoint,
+        toNormal tn: CGPoint
+    ) -> (CGPoint, CGPoint) {
+        let len = max(hypot(b.x - a.x, b.y - a.y), 1)
+        let handle = min(max(len * 0.52, 42), 110)
+        let c1 = CGPoint(x: a.x + fn.x * handle, y: a.y + fn.y * handle)
+        let c2 = CGPoint(x: b.x + tn.x * handle, y: b.y + tn.y * handle)
+        return (c1, c2)
     }
 
     private func zoomBtn(_ s: String, _ action: @escaping () -> Void) -> some View {
@@ -4986,79 +5785,203 @@ struct ComboTopologyGraph: View {
         .buttonStyle(.plain)
     }
 
+    /// Hub trung tâm topology — logo AI Gate + trạng thái gateway.
     private func hub(glow: Bool) -> some View {
-        HStack(spacing: 8) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 5, style: .continuous).fill(Color.orange).frame(width: 20, height: 20)
-                Text("9").font(.system(size: 12, weight: .black, design: .rounded)).foregroundStyle(.black)
+        let statusTint: Color = overallReady ? DS.C.success : DS.C.warning
+        let accent = Color(red: 0.42, green: 0.48, blue: 0.95)
+        let active = glow || overallReady
+
+        return HStack(spacing: 11) {
+            AppLogoImage(kind: .nav, size: 30)
+                .shadow(color: accent.opacity(active ? 0.45 : 0.2), radius: active ? 6 : 3)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text("AI Gate")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(DS.C.chartOnDarkPrimary)
+                        .lineLimit(1)
+                    Text(providerRatio)
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(providerRatioColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(providerRatioColor.opacity(0.14))
+                        .clipShape(Capsule())
+                }
+
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(statusTint)
+                        .frame(width: 5, height: 5)
+                        .shadow(color: statusTint.opacity(0.6), radius: 2)
+                    Text(statusHeadline)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(statusTint)
+                        .lineLimit(1)
+                }
             }
-            Text(comboName)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(DS.C.chartOnDarkPrimary)
-                .lineLimit(1)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(DS.C.chartSurfaceElevated)
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.orange, lineWidth: 1.6))
-        .shadow(color: Color.orange.opacity(glow ? 0.65 : 0.28), radius: glow ? 16 : 8)
-        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .padding(.vertical, 11)
+        .background {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(DS.C.chartSurfaceElevated)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [accent.opacity(0.10), Color.clear],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            accent.opacity(active ? 0.65 : 0.30),
+                            accent.opacity(active ? 0.20 : 0.10),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: active ? 1.4 : 1
+                )
+        }
+        .shadow(color: accent.opacity(active ? 0.30 : 0.12), radius: active ? 14 : 6, y: 2)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .help(statusDetailLine)
     }
 
-    /// Card: icon + tên + model + status (chấm + text ngắn từ testStatus thật).
-    private func pill(_ n: Node) -> some View {
+    /// Chiều ngang card theo title (model dài sẽ truncate), chiều cao cố định.
+    private func pillWidth(for n: Node) -> CGFloat {
+        let titleFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        let statusFont = NSFont.systemFont(ofSize: 7.5, weight: .bold)
+
+        let titleW = ceil((n.title as NSString).size(withAttributes: [.font: titleFont]).width)
+        let statusW = ceil((n.statusText.uppercased() as NSString).size(withAttributes: [.font: statusFont]).width)
+
+        let statusPillW = statusW + 4 + 4 + 14
+        let width = 20 + 28 + 9 + titleW + 8 + statusPillW
+        return min(max(width, 118), 220)
+    }
+
+    /// Card provider — đồng bộ visual với hub trung tâm.
+    private func pill(_ n: Node, width: CGFloat) -> some View {
         let dim = n.activity == .idle && (!n.enabled || !n.connected)
         let live = n.activity == .live
         let warm = n.activity == .warm
         let err = n.activity == .error
-        let liveColor = Color(red: 0.20, green: 0.88, blue: 0.78)
-        let tint: Color = live ? liveColor : (err ? .red : (warm ? .orange : n.accent))
-        return HStack(spacing: 6) {
-            Image(systemName: n.symbol)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(dim ? Color.white.opacity(0.35) : tint)
-                .frame(width: 12)
+        let liveColor = DS.C.chartLive
+        let accent: Color = live ? liveColor : (err ? .red : (warm ? .orange : n.accent))
+        let active = live || warm || err
+        let statusColor = dim ? DS.C.chartOnDarkTertiary : n.statusColor
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(n.title)
+        return HStack(spacing: 9) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                accent.opacity(dim ? 0.07 : 0.16),
+                                accent.opacity(dim ? 0.03 : 0.05),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                Image(systemName: n.symbol)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(DS.C.chartOnDarkPrimary.opacity(dim ? 0.4 : 1))
-                    .lineLimit(1)
-                if !n.model.isEmpty {
-                    Text(n.model)
-                        .font(.system(size: 8, design: .monospaced))
-                        .foregroundStyle(DS.C.chartOnDarkPrimary.opacity(dim ? 0.28 : 0.5))
-                        .lineLimit(1)
-                        .frame(maxWidth: 96, alignment: .leading)
-                }
+                    .foregroundStyle(dim ? Color.white.opacity(0.35) : accent)
+            }
+            .frame(width: 28, height: 28)
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(accent.opacity(dim ? 0.08 : 0.22), lineWidth: 0.8)
             }
 
-            VStack(spacing: 2) {
-                Circle()
-                    .fill(dim ? DS.C.chartOnDarkTertiary : n.statusColor)
-                    .frame(width: 6, height: 6)
-                Text(n.statusText)
-                    .font(.system(size: 7, weight: .bold))
-                    .foregroundStyle(dim ? DS.C.chartOnDarkTertiary : n.statusColor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(n.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(DS.C.chartOnDarkPrimary.opacity(dim ? 0.45 : 1))
                     .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(n.model.isEmpty ? "No model" : n.model)
+                    .font(.system(size: 8, weight: .medium, design: .monospaced))
+                    .foregroundStyle(
+                        DS.C.chartOnDarkSecondary.opacity(
+                            n.model.isEmpty ? (dim ? 0.35 : 0.55) : (dim ? 0.45 : 0.85)
+                        )
+                    )
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 4, height: 4)
+                    .shadow(color: statusColor.opacity(dim ? 0 : 0.55), radius: 2)
+                Text(n.statusText.uppercased())
+                    .font(.system(size: 7.5, weight: .bold, design: .rounded))
+                    .foregroundStyle(statusColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(statusColor.opacity(dim ? 0.06 : 0.12))
+            .clipShape(Capsule())
+            .overlay {
+                Capsule()
+                    .strokeBorder(statusColor.opacity(dim ? 0.08 : 0.22), lineWidth: 0.6)
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(DS.C.chartSurfaceElevated.opacity(dim ? 0.75 : 1))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .padding(.vertical, 9)
+        .frame(width: width, height: 48)
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(DS.C.chartSurfaceElevated.opacity(dim ? 0.82 : 1))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [accent.opacity(dim ? 0.04 : 0.08), Color.clear],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(
-                    live ? liveColor :
-                    err ? Color.red :
-                    warm ? Color.orange.opacity(0.7) :
-                    DS.C.chartOnDarkPrimary.opacity(dim ? 0.08 : 0.14),
-                    lineWidth: (live || err) ? 1.6 : 1
+                    LinearGradient(
+                        colors: [
+                            accent.opacity(active ? 0.70 : (dim ? 0.10 : 0.28)),
+                            accent.opacity(active ? 0.18 : 0.08),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: active ? 1.4 : 1
                 )
-        )
-        .shadow(color: live ? liveColor.opacity(0.45) : (err ? Color.red.opacity(0.35) : .clear), radius: 8)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .opacity(dim ? 0.55 : 1)
+        }
+        .shadow(color: accent.opacity(active ? 0.28 : 0), radius: active ? 10 : 0, y: 2)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .opacity(dim ? 0.62 : 1)
+    }
+
+    /// Hạt giống deterministic trong [0,1) — giữ kích thước/độ sáng ổn định giữa các frame.
+    private func seededUnit(_ s: Int) -> CGFloat {
+        let x = UInt32(truncatingIfNeeded: s &* 2654435761 &* (s ^ (s >> 13)))
+        return CGFloat(x & 0xFFFF) / CGFloat(0x10000)
     }
 
     private func statusLabel(_ item: ProviderHealthItem) -> (String, Color) {
@@ -5077,40 +6000,6 @@ struct ComboTopologyGraph: View {
         if !item.lastError.isEmpty { return ("Lỗi", .orange) }
         if item.testStatus == "inactive" || !item.active { return ("Off", Color(nsColor: .tertiaryLabelColor)) }
         return ("?", Color(nsColor: .tertiaryLabelColor))
-    }
-
-    /// Cubic lệch nhẹ ra ngoài hub — cong vừa, không đẩy line lệch khỏi node.
-    private func cubicControls(from a: CGPoint, to b: CGPoint, hub: CGPoint) -> (CGPoint, CGPoint) {
-        let dx = b.x - a.x
-        let dy = b.y - a.y
-        let len = max(hypot(dx, dy), 1)
-        let ux = dx / len
-        let uy = dy / len
-        let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
-        var ox = mid.x - hub.x
-        var oy = mid.y - hub.y
-        let olen = hypot(ox, oy)
-        if olen > 1 {
-            ox /= olen
-            oy /= olen
-        } else {
-            ox = -uy
-            oy = ux
-        }
-        let tx = -uy
-        let ty = ux
-        let side: CGFloat = ((mid.x - hub.x) * tx + (mid.y - hub.y) * ty) >= 0 ? 1 : -1
-        let bulge = min(52, max(16, len * 0.2))
-        let sway = min(14, max(4, len * 0.06)) * side
-        let c1 = CGPoint(
-            x: a.x + ux * len * 0.31 + ox * bulge + tx * sway,
-            y: a.y + uy * len * 0.31 + oy * bulge + ty * sway
-        )
-        let c2 = CGPoint(
-            x: a.x + ux * len * 0.69 + ox * bulge * 0.86 - tx * sway * 0.45,
-            y: a.y + uy * len * 0.69 + oy * bulge * 0.86 - ty * sway * 0.45
-        )
-        return (c1, c2)
     }
 
     private func cubic(_ a: CGPoint, _ c1: CGPoint, _ c2: CGPoint, _ b: CGPoint, _ t: CGFloat) -> CGPoint {
@@ -5260,7 +6149,7 @@ struct BackupView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: DS.Sp.l) {
                 PageHeader(
                     symbol: AppState.Section.backup.icon,
                     color: AppState.Section.backup.accentColor,
@@ -5269,72 +6158,104 @@ struct BackupView: View {
                 )
 
                 SettingsCard {
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text("Backup gồm: 9Router, proxy, combo Cursor/Codex. Sau Import app tự apply lại cấu hình.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    VStack(alignment: .leading, spacing: DS.Sp.l) {
+                        HStack(alignment: .top, spacing: DS.Sp.m) {
+                            SquircleIcon(
+                                symbol: "arrow.triangle.2.circlepath.circle.fill",
+                                color: AppState.Section.backup.accentColor,
+                                size: 36,
+                                inner: 18,
+                                radius: DS.Rad.m
+                            )
 
-                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: DS.Sp.xxs) {
+                                Text("Quản lý bản sao lưu cấu hình")
+                                    .font(DS.Typo.rowTitle)
+                                    .foregroundStyle(DS.C.label)
+                                Text("Backup gồm: 9Router, proxy, combo Cursor/Codex. Sau khi Import app sẽ tự động áp dụng lại cấu hình.")
+                                    .font(DS.Typo.caption)
+                                    .foregroundStyle(DS.C.secondaryLabel)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+
+                        HStack(spacing: DS.Sp.m) {
                             Button { state.exportBackup() } label: {
-                                Label("Backup", systemImage: "square.and.arrow.up")
+                                Label("Tạo bản sao lưu (Backup)", systemImage: "square.and.arrow.up")
                             }
                             .buttonStyle(.borderedProminent)
+                            .controlSize(.regular)
                             .disabled(state.backupBusy)
 
                             Button { state.importBackup() } label: {
-                                Label("Import", systemImage: "square.and.arrow.down")
+                                Label("Khôi phục (Import)", systemImage: "square.and.arrow.down")
                             }
                             .buttonStyle(.bordered)
+                            .controlSize(.regular)
                             .disabled(state.backupBusy)
                         }
 
                         if state.backupBusy {
-                            HStack(spacing: 8) {
+                            HStack(spacing: DS.Sp.s) {
                                 ProgressView().controlSize(.small)
                                 Text(state.backupMessage.isEmpty ? "Đang xử lý..." : state.backupMessage)
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                                    .font(DS.Typo.small)
+                                    .foregroundStyle(DS.C.secondaryLabel)
                             }
+                            .padding(.top, DS.Sp.xxs)
                         } else if !state.backupMessage.isEmpty {
-                            Text(state.backupMessage)
-                                .font(.system(size: 11))
-                                .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                            HStack(spacing: DS.Sp.s) {
+                                Image(systemName: "info.circle.fill")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(DS.C.brand)
+                                Text(state.backupMessage)
+                                    .font(DS.Typo.small)
+                                    .foregroundStyle(DS.C.secondaryLabel)
+                            }
+                            .padding(.top, DS.Sp.xxs)
                         }
                     }
-                    .padding(16)
+                    .padding(DS.Sp.l)
                 }
             }
-            .padding(24)
+            .padding(DS.Sp.l)
         }
     }
-}// MARK: - Tab 3: Environment & Setup
+}
+
+// MARK: - Tab: Environment & Setup
 
 struct EnvironmentView: View {
     @EnvironmentObject private var state: AppState
 
+    private var allReady: Bool {
+        state.envReadyCount == state.envItems.count && !state.envItems.isEmpty
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: DS.Sp.l) {
                 PageHeader(
                     symbol: AppState.Section.environment.icon,
                     color: AppState.Section.environment.accentColor,
                     title: "Environment & Setup",
-                    subtitle: "Verify and configure required system runtime dependencies."
+                    subtitle: "Xác minh và thiết lập môi trường thực thi runtime trên hệ thống."
                 )
 
                 // Top Banner Card
                 SettingsCard {
-                    HStack(spacing: 14) {
-                        Image(systemName: state.envReadyCount == state.envItems.count && !state.envItems.isEmpty ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                            .font(.system(size: 24))
-                            .foregroundStyle(state.envReadyCount == state.envItems.count && !state.envItems.isEmpty ? Color.green : Color.orange)
+                    HStack(spacing: DS.Sp.m) {
+                        Image(systemName: allReady ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                            .font(.system(size: 26))
+                            .foregroundStyle(allReady ? DS.C.success : DS.C.warning)
 
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Environment: \(state.envReadyCount)/\(state.envItems.count) tools ready")
-                                .font(.system(size: 14, weight: .bold))
-                            Text("System automatically manages Homebrew, Node.js v20, 9Router, Go, and Git.")
-                                .font(.system(size: 12))
-                                .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                        VStack(alignment: .leading, spacing: DS.Sp.xxs) {
+                            Text("Trạng thái môi trường: \(state.envReadyCount)/\(state.envItems.count) công cụ sẵn sàng")
+                                .font(DS.Typo.rowTitle)
+                                .foregroundStyle(DS.C.label)
+                            Text("Hệ thống tự động quản lý Homebrew, Node.js v20, 9Router, Go, Git và Tailscale.")
+                                .font(DS.Typo.caption)
+                                .foregroundStyle(DS.C.secondaryLabel)
                         }
 
                         Spacer()
@@ -5343,70 +6264,73 @@ struct EnvironmentView: View {
                             state.runBootstrap()
                         } label: {
                             if state.isBusy {
-                                Label("Installing...", systemImage: "hourglass")
+                                Label("Đang cài đặt...", systemImage: "hourglass")
                             } else {
-                                Label("Click Auto Install", systemImage: "wrench.and.screwdriver.fill")
+                                Label("Tự động cài đặt", systemImage: "wrench.and.screwdriver.fill")
                             }
                         }
                         .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
                         .disabled(state.isBusy)
                     }
-                    .padding(16)
+                    .padding(DS.Sp.l)
                 }
 
                 // Tool Checklist in Grouped SettingsCard
-                SettingsCard(header: "Environment Dependencies (\(state.envItems.count))") {
+                SettingsCard(header: "Danh sách công cụ & Runtime (\(state.envItems.count))") {
                     VStack(spacing: 0) {
                         ForEach(Array(state.envItems.enumerated()), id: \.element.id) { index, item in
-                            HStack(spacing: 12) {
+                            HStack(spacing: DS.Sp.m) {
                                 SquircleIcon(
                                     symbol: item.iconName,
-                                    color: item.isReady ? Color.green : Color.orange,
-                                    size: 34,
-                                    inner: 16,
-                                    radius: 8
+                                    color: item.isReady ? DS.C.success : DS.C.warning,
+                                    size: 32,
+                                    inner: 15,
+                                    radius: DS.Rad.s
                                 )
 
-                                VStack(alignment: .leading, spacing: 2) {
+                                VStack(alignment: .leading, spacing: DS.Sp.xxs) {
                                     Text(item.name)
-                                        .font(.system(size: 13, weight: .bold))
+                                        .font(DS.Typo.rowTitle)
+                                        .foregroundStyle(DS.C.label)
                                     Text(item.statusDescription)
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                                        .font(DS.Typo.small)
+                                        .foregroundStyle(DS.C.secondaryLabel)
                                 }
 
                                 Spacer()
 
-                                VStack(alignment: .trailing, spacing: 2) {
+                                VStack(alignment: .trailing, spacing: DS.Sp.xxs) {
                                     Text(item.installed)
-                                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                                    Text("Required: \(item.required)")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                                        .font(DS.Typo.mono)
+                                        .foregroundStyle(DS.C.label)
+                                    Text("Yêu cầu: \(item.required)")
+                                        .font(DS.Typo.monoMicro)
+                                        .foregroundStyle(DS.C.secondaryLabel)
                                 }
 
                                 StatusPill(
                                     text: item.isReady ? "Ready" : "Missing",
-                                    color: item.isReady ? .green : .orange
+                                    color: item.isReady ? DS.C.success : DS.C.warning
                                 )
                             }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 11)
+                            .padding(.horizontal, DS.Sp.l)
+                            .padding(.vertical, DS.Sp.m)
 
                             if index < state.envItems.count - 1 {
                                 Divider()
-                                    .padding(.leading, 60)
+                                    .padding(.leading, 56)
                             }
                         }
                     }
                 }
             }
-            .padding(22)
+            .padding(DS.Sp.l)
         }
     }
 }
 
-// MARK: - Tab 4: Proxies View
+// MARK: - Tab: Proxies View
 
 struct ProxiesView: View {
     @EnvironmentObject private var state: AppState
@@ -5415,50 +6339,64 @@ struct ProxiesView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: DS.Sp.l) {
                 PageHeader(
                     symbol: AppState.Section.proxies.icon,
                     color: AppState.Section.proxies.accentColor,
                     title: "Proxy Manager",
-                    subtitle: "Manage and configure dynamic local proxies."
+                    subtitle: "Quản lý và điều phối các endpoint local proxy linh hoạt."
                 ) {
                     Button {
                         showingAdd = true
                     } label: {
-                        Label("Add New Proxy", systemImage: "plus")
+                        Label("Thêm Proxy mới", systemImage: "plus")
                     }
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
                 }
 
-                SettingsCard(header: "Local Proxies (\(state.proxies.count))") {
-                    VStack(spacing: 0) {
-                        ForEach(Array(state.proxies.enumerated()), id: \.element.id) { index, proxy in
-                            ProxyRowView(
-                                proxy: proxy,
-                                onToggle: {
-                                    var updated = proxy
-                                    updated.enabled.toggle()
-                                    state.updateProxy(updated)
-                                },
-                                onEdit: { selectedProxy = proxy },
-                                onDelete: { state.deleteProxy(proxy) }
-                            )
+                SettingsCard(header: "Danh sách Local Proxies (\(state.proxies.count))") {
+                    if state.proxies.isEmpty {
+                        VStack(spacing: DS.Sp.s) {
+                            Image(systemName: "antenna.radiowaves.left.and.right.slash")
+                                .font(.system(size: 28))
+                                .foregroundStyle(DS.C.tertiaryLabel)
+                            Text("Chưa có proxy nào được tạo")
+                                .font(DS.Typo.caption)
+                                .foregroundStyle(DS.C.secondaryLabel)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(DS.Sp.xxxl)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(Array(state.proxies.enumerated()), id: \.element.id) { index, proxy in
+                                ProxyRowView(
+                                    proxy: proxy,
+                                    onToggle: {
+                                        var updated = proxy
+                                        updated.enabled.toggle()
+                                        state.updateProxy(updated)
+                                    },
+                                    onEdit: { selectedProxy = proxy },
+                                    onDelete: { state.deleteProxy(proxy) }
+                                )
 
-                            if index < state.proxies.count - 1 {
-                                Divider()
-                                    .padding(.leading, 60)
+                                if index < state.proxies.count - 1 {
+                                    Divider()
+                                        .padding(.leading, 56)
+                                }
                             }
                         }
                     }
                 }
             }
-            .padding(22)
+            .padding(DS.Sp.l)
         }
         .sheet(item: $selectedProxy) { p in
             ProxyEditor(proxy: p) { updated in state.updateProxy(updated) }
                 .overlay(alignment: .bottom) {
                     ToastStackView()
-                        .padding(.bottom, 16)
+                        .padding(.bottom, DS.Sp.l)
                 }
         }
     }
@@ -5472,64 +6410,73 @@ struct ProxyRowView: View {
     @State private var showingGuide = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 12) {
-                SquircleIcon(symbol: proxy.iconName, color: Color(red: 0.38, green: 0.34, blue: 0.93), size: 34, inner: 16, radius: 8)
+        VStack(alignment: .leading, spacing: DS.Sp.s) {
+            HStack(spacing: DS.Sp.m) {
+                SquircleIcon(
+                    symbol: proxy.iconName,
+                    color: AppState.Section.proxies.accentColor,
+                    size: 32,
+                    inner: 15,
+                    radius: DS.Rad.s
+                )
 
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: DS.Sp.xxs) {
+                    HStack(spacing: DS.Sp.xs) {
                         Text(proxy.name)
-                            .font(.system(size: 13, weight: .bold))
+                            .font(DS.Typo.rowTitle)
+                            .foregroundStyle(DS.C.label)
                         CodeBadge(text: "PORT \(proxy.port)")
                     }
                     Text("http://127.0.0.1:\(proxy.port)/v1")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                        .font(DS.Typo.mono)
+                        .foregroundStyle(DS.C.secondaryLabel)
                 }
 
                 Spacer()
 
                 if let latency = proxy.latency {
                     Text("\(latency) ms")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                        .font(DS.Typo.monoMicro)
+                        .foregroundStyle(DS.C.secondaryLabel)
                 }
 
                 StatusPill(
                     text: proxy.enabled ? (proxy.status == .ready ? "Running" : "Offline") : "Off",
-                    color: proxy.enabled && proxy.status == .ready ? .green : .orange
+                    color: proxy.enabled && proxy.status == .ready ? DS.C.success : DS.C.warning
                 )
 
                 Toggle("", isOn: Binding(get: { proxy.enabled }, set: { _ in onToggle() }))
                     .toggleStyle(.switch)
                     .controlSize(.small)
+                    .labelsHidden()
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: DS.Sp.s) {
                 TestProxyButton(proxy: proxy)
 
                 Button("Client Guide") { showingGuide = true }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
 
-                Button("Edit") { onEdit() }
+                Button("Chỉnh sửa") { onEdit() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
 
-                Button("Delete", role: .destructive) { onDelete() }
+                Button("Xoá", role: .destructive) { onDelete() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
 
                 Spacer()
 
                 Text("Command: \(proxy.startCommand)")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                    .font(DS.Typo.monoMicro)
+                    .foregroundStyle(DS.C.tertiaryLabel)
+                    .lineLimit(1)
             }
-            .padding(.leading, 46)
+            .padding(.leading, 44)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.horizontal, DS.Sp.l)
+        .padding(.vertical, DS.Sp.m)
         .sheet(isPresented: $showingGuide) {
             ClientGuideSheet(proxy: proxy)
         }
@@ -5542,28 +6489,37 @@ struct ClientGuideSheet: View {
     let proxy: ProxyConfig
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: DS.Sp.l) {
             HStack {
-                Text("Client Connection Guide").font(.title3.bold())
+                Text("Client Connection Guide")
+                    .font(DS.Typo.sectionTitle)
+                    .foregroundStyle(DS.C.label)
                 Spacer()
-                Button("Close") { dismiss() }
+                Button("Đóng") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
             }
             Divider()
 
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Local tools (same Mac)")
-                    .font(.system(size: 12, weight: .semibold))
+            VStack(alignment: .leading, spacing: DS.Sp.m) {
+                Text("Local tools (Cùng máy Mac)")
+                    .font(DS.Typo.rowTitle)
+                    .foregroundStyle(DS.C.label)
+
                 LabeledContent("Base URL:") {
-                    HStack {
-                        Text("http://127.0.0.1:\(proxy.port)/v1").font(.caption.monospaced())
+                    HStack(spacing: DS.Sp.s) {
+                        Text("http://127.0.0.1:\(proxy.port)/v1")
+                            .font(DS.Typo.mono)
+                            .foregroundStyle(DS.C.label)
                         Button("Copy") { state.copy("http://127.0.0.1:\(proxy.port)/v1") }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                     }
                 }
                 LabeledContent("API Key:") {
-                    HStack {
-                        Text("sk-dummy").font(.caption.monospaced())
+                    HStack(spacing: DS.Sp.s) {
+                        Text("sk-dummy")
+                            .font(DS.Typo.mono)
+                            .foregroundStyle(DS.C.label)
                         Button("Copy") { state.copy("sk-dummy") }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
@@ -5573,10 +6529,11 @@ struct ClientGuideSheet: View {
                 Divider()
 
                 Text("Cursor IDE")
-                    .font(.system(size: 12, weight: .semibold))
-                Text("Cursor không gọi được localhost — request đi qua Cursor cloud. Bật «Dùng với Cursor» ở Overview (Tailscale Funnel), rồi Apply để ghi Base URL https://….ts.net/v1 + API key 9Router.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    .font(DS.Typo.rowTitle)
+                    .foregroundStyle(DS.C.label)
+                Text("Cursor không gọi được trực tiếp localhost do request chạy qua Cursor cloud. Bật «Dùng với Cursor» ở Overview (Tailscale Funnel), rồi Apply để ghi Base URL https://….ts.net/v1 + API key 9Router.")
+                    .font(DS.Typo.small)
+                    .foregroundStyle(DS.C.secondaryLabel)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Button("Mở Cursor Info") {
@@ -5591,11 +6548,11 @@ struct ClientGuideSheet: View {
             }
             Spacer()
         }
-        .padding(20)
+        .padding(DS.Sp.xl)
         .frame(width: 520, height: 340)
         .overlay(alignment: .bottom) {
             ToastStackView()
-                .padding(.bottom, 16)
+                .padding(.bottom, DS.Sp.l)
         }
     }
 }
@@ -5625,9 +6582,10 @@ struct ProxyEditor: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(proxy == nil ? "Add New Proxy" : "Edit Proxy")
-                .font(.title3.bold())
+        VStack(alignment: .leading, spacing: DS.Sp.l) {
+            Text(proxy == nil ? "Thêm Proxy mới" : "Chỉnh sửa Proxy")
+                .font(DS.Typo.sectionTitle)
+                .foregroundStyle(DS.C.label)
 
             Form {
                 Picker("Preset Template", selection: $selectedPreset) {
@@ -5640,21 +6598,22 @@ struct ProxyEditor: View {
                     applyPreset(newValue)
                 }
 
-                Section("Configuration Details") {
-                    TextField("Proxy Name", text: $name)
+                Section("Chi tiết cấu hình") {
+                    TextField("Tên Proxy", text: $name)
                     TextField("Port", text: $portStr)
                     TextField("Health Check URL", text: $healthUrl)
-                    TextField("Start Command", text: $startCommand)
-                    TextField("Git Repo (Optional)", text: $gitRepo)
-                    Toggle("Enable Proxy", isOn: $enabled)
+                    TextField("Lệnh khởi chạy (Start Command)", text: $startCommand)
+                    TextField("Git Repo (Tuỳ chọn)", text: $gitRepo)
+                    Toggle("Kích hoạt Proxy", isOn: $enabled)
                 }
             }
             .formStyle(.grouped)
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Save") {
+                Button("Huỷ") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Lưu cấu hình") {
                     let port = Int(portStr) ?? 8318
                     let newP = ProxyConfig(
                         id: proxy?.id ?? UUID(),
@@ -5670,9 +6629,10 @@ struct ProxyEditor: View {
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
+        .padding(DS.Sp.xl)
         .frame(width: 480)
     }
 
@@ -5707,7 +6667,7 @@ struct ProxyEditor: View {
     }
 }
 
-// MARK: - Tab 4: Logs View
+// MARK: - Tab: Logs View
 
 struct LogsView: View {
     @EnvironmentObject private var state: AppState
@@ -5739,15 +6699,15 @@ struct LogsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: DS.Sp.l) {
                 // Header
                 PageHeader(
                     symbol: AppState.Section.logs.icon,
                     color: AppState.Section.logs.accentColor,
                     title: "System Logs",
-                    subtitle: "Real-time log events, requests, and system diagnostics."
+                    subtitle: "Sự kiện log thời gian thực, request luân chuyển và chẩn đoán hệ thống."
                 ) {
-                    HStack(spacing: 8) {
+                    HStack(spacing: DS.Sp.s) {
                         Button {
                             state.copyAllLogs()
                         } label: {
@@ -5759,7 +6719,7 @@ struct LogsView: View {
                         Button(role: .destructive) {
                             state.clearLogs()
                         } label: {
-                            Label("Clear Logs", systemImage: "trash")
+                            Label("Xoá Logs", systemImage: "trash")
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.regular)
@@ -5768,28 +6728,28 @@ struct LogsView: View {
 
                 // Filter & Search Toolbar
                 SettingsCard {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: DS.Sp.m) {
                         // Level Filter Chips
-                        HStack(spacing: 8) {
+                        HStack(spacing: DS.Sp.s) {
                             ForEach(LogLevel.allCases, id: \.self) { lvl in
                                 let count = levelCounts[lvl] ?? 0
                                 Button {
                                     selectedLevel = lvl
                                 } label: {
-                                    HStack(spacing: 4) {
+                                    HStack(spacing: DS.Sp.xs) {
                                         Text(lvl.rawValue)
                                             .font(.system(size: 11, weight: selectedLevel == lvl ? .bold : .medium))
                                         Text("(\(count))")
-                                            .font(.system(size: 10, design: .monospaced))
+                                            .font(DS.Typo.monoMicro)
                                     }
-                                    .padding(.horizontal, 10)
+                                    .padding(.horizontal, DS.Sp.m)
                                     .padding(.vertical, 5)
-                                    .background(selectedLevel == lvl ? lvl.color.opacity(0.2) : Color(nsColor: .tertiarySystemFill))
-                                    .foregroundStyle(selectedLevel == lvl ? (lvl == .all ? Color.primary : lvl.color) : Color(nsColor: .secondaryLabelColor))
+                                    .background(selectedLevel == lvl ? (lvl == .all ? DS.C.fillSelected : lvl.color.opacity(0.18)) : DS.C.fillHover)
+                                    .foregroundStyle(selectedLevel == lvl ? (lvl == .all ? DS.C.label : lvl.color) : DS.C.secondaryLabel)
                                     .clipShape(Capsule())
                                     .overlay(
                                         Capsule()
-                                            .strokeBorder(selectedLevel == lvl ? (lvl == .all ? Color.primary.opacity(0.3) : lvl.color.opacity(0.5)) : Color.clear, lineWidth: 1)
+                                            .strokeBorder(selectedLevel == lvl ? (lvl == .all ? DS.C.label.opacity(0.3) : lvl.color.opacity(0.5)) : Color.clear, lineWidth: 1)
                                     )
                                 }
                                 .buttonStyle(.plain)
@@ -5800,39 +6760,39 @@ struct LogsView: View {
                         Divider()
 
                         // Search Input Field
-                        HStack(spacing: 8) {
+                        HStack(spacing: DS.Sp.s) {
                             Image(systemName: "magnifyingglass")
                                 .font(.system(size: 12))
-                                .foregroundStyle(Color(nsColor: .secondaryLabelColor))
-                            TextField("Filter logs by keyword, service name, or error...", text: $searchKeyword)
+                                .foregroundStyle(DS.C.secondaryLabel)
+                            TextField("Lọc log theo từ khoá, tên dịch vụ hoặc lỗi...", text: $searchKeyword)
                                 .textFieldStyle(.plain)
-                                .font(.system(size: 12))
+                                .font(DS.Typo.body)
                             if !searchKeyword.isEmpty {
                                 Button(action: { searchKeyword = "" }) {
                                     Image(systemName: "xmark.circle.fill")
                                         .font(.system(size: 12))
-                                        .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                                        .foregroundStyle(DS.C.tertiaryLabel)
                                 }
                                 .buttonStyle(.plain)
                             }
                         }
                     }
-                    .padding(14)
+                    .padding(DS.Sp.m)
                 }
 
                 // Log Entries List
                 SettingsCard(header: "Log Entries (\(filteredLogs.count))") {
                     if filteredLogs.isEmpty {
-                        VStack(spacing: 8) {
+                        VStack(spacing: DS.Sp.s) {
                             Image(systemName: "tray")
                                 .font(.system(size: 28))
-                                .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
-                            Text("No log entries match the filter")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                                .foregroundStyle(DS.C.tertiaryLabel)
+                            Text("Không có sự kiện log nào phù hợp với bộ lọc")
+                                .font(DS.Typo.caption)
+                                .foregroundStyle(DS.C.secondaryLabel)
                         }
                         .frame(maxWidth: .infinity)
-                        .padding(40)
+                        .padding(DS.Sp.xxxl)
                     } else {
                         VStack(spacing: 0) {
                             ForEach(Array(filteredLogs.enumerated()), id: \.element.id) { index, log in
@@ -5850,14 +6810,14 @@ struct LogsView: View {
 
                                 if index < filteredLogs.count - 1 {
                                     Divider()
-                                        .padding(.leading, 14)
+                                        .padding(.leading, DS.Sp.l)
                                 }
                             }
                         }
                     }
                 }
             }
-            .padding(22)
+            .padding(DS.Sp.l)
         }
         .onAppear { recomputeLogCache() }
         .onReceive(logsStore.$logs) { _ in recomputeLogCache() }
@@ -5882,12 +6842,12 @@ struct LogItemRow: View {
     let onToggleExpand: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .center, spacing: 10) {
+        VStack(alignment: .leading, spacing: DS.Sp.xs) {
+            HStack(alignment: .center, spacing: DS.Sp.m) {
                 // Timestamp
                 Text(log.timeFormatted)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    .font(DS.Typo.mono)
+                    .foregroundStyle(DS.C.secondaryLabel)
                     .frame(width: 58, alignment: .leading)
 
                 // Level Badge
@@ -5897,19 +6857,19 @@ struct LogItemRow: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(log.level.color.opacity(0.15))
-                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-                    .frame(width: 62, alignment: .center)
+                    .clipShape(RoundedRectangle(cornerRadius: DS.Rad.s, style: .continuous))
+                    .frame(width: 60, alignment: .center)
 
                 // Source
                 Text("[\(log.source)]")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    .font(DS.Typo.mono)
+                    .foregroundStyle(DS.C.secondaryLabel)
                     .frame(width: 90, alignment: .leading)
 
                 // Message
                 Text(log.message)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Color(nsColor: .labelColor))
+                    .font(DS.Typo.body)
+                    .foregroundStyle(DS.C.label)
                     .lineLimit(isExpanded ? nil : 1)
 
                 Spacer(minLength: 0)
@@ -5918,7 +6878,7 @@ struct LogItemRow: View {
                     Button(action: onToggleExpand) {
                         Image(systemName: isExpanded ? "chevron.up.circle.fill" : "chevron.down.circle")
                             .font(.system(size: 13))
-                            .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                            .foregroundStyle(DS.C.secondaryLabel)
                     }
                     .buttonStyle(.plain)
                 }
@@ -5926,21 +6886,25 @@ struct LogItemRow: View {
 
             // Expanded Detail View
             if isExpanded, let detail = log.detail {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: DS.Sp.xs) {
                     Text(detail)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Color(nsColor: .labelColor))
-                        .padding(10)
+                        .font(DS.Typo.mono)
+                        .foregroundStyle(DS.C.label)
+                        .padding(DS.Sp.m)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(nsColor: .windowBackgroundColor).opacity(0.7))
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .background(DS.C.surfaceInset)
+                        .clipShape(RoundedRectangle(cornerRadius: DS.Rad.s, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: DS.Rad.s, style: .continuous)
+                                .strokeBorder(DS.C.separator.opacity(0.35), lineWidth: 0.8)
+                        )
                 }
                 .padding(.leading, 68)
-                .padding(.top, 2)
+                .padding(.top, DS.Sp.xxs)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, DS.Sp.l)
+        .padding(.vertical, DS.Sp.m)
     }
 }
 
@@ -6056,7 +7020,7 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 12) {
             // Header
             HStack(spacing: 10) {
-                AppLogoImage(kind: .app, size: 36)
+                AppLogoImage(kind: .nav, size: 36)
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text("AI Gate")
@@ -6298,12 +7262,12 @@ struct MenuBarView: View {
 
     private func openMainWindow() {
         if let window = AppWindow.main() {
-            AppWindow.present(window, fillScreen: true)
+            AppWindow.present(window)
             return
         }
         openWindow(id: "main")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-            AppWindow.present(fillScreen: true)
+            AppWindow.present()
         }
     }
 }
