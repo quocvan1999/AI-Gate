@@ -705,6 +705,8 @@ final class LogsStore: ObservableObject {
         LogEntry(timestamp: Date().addingTimeInterval(-120), level: .success, source: "AgentRouter", message: "AgentRouter Proxy connected on port 8318", detail: "Health URL: http://127.0.0.1:8318/health (1 ms)"),
         LogEntry(timestamp: Date().addingTimeInterval(-60), level: .info, source: "AutoHeal", message: "All services are operating normally in background", detail: nil)
     ]
+    @Published var logDiskBytes: Int64 = 0
+    @Published var logDiskFormatted: String = "0 B"
 }
 
 @MainActor
@@ -771,6 +773,14 @@ final class AppState: ObservableObject {
     var logs: [LogEntry] {
         get { logsState.logs }
         set { logsState.logs = newValue }
+    }
+    var logDiskBytes: Int64 {
+        get { logsState.logDiskBytes }
+        set { logsState.logDiskBytes = newValue }
+    }
+    var logDiskFormatted: String {
+        get { logsState.logDiskFormatted }
+        set { logsState.logDiskFormatted = newValue }
     }
     var pathHealth: PathHealthStatus {
         get { topology.pathHealth }
@@ -1113,7 +1123,35 @@ final class AppState: ObservableObject {
     }
 
     private func startLogsPolling() {
+        refreshLogDiskUsage()
         startLiveLogStreaming()
+    }
+
+    /// Tính dung lượng thực tế trên ổ cứng của thư mục ~/ai-stack/logs
+    func refreshLogDiskUsage() {
+        let logDir = ("~/ai-stack/logs" as NSString).expandingTildeInPath
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let totalBytes = Self.computeLogDirectoryBytes(logDir)
+            let formatted = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+            Task { @MainActor in
+                self?.logDiskBytes = totalBytes
+                self?.logDiskFormatted = formatted
+            }
+        }
+    }
+
+    nonisolated private static func computeLogDirectoryBytes(_ dirPath: String) -> Int64 {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(atPath: dirPath) else { return 0 }
+        var total: Int64 = 0
+        for file in files {
+            let fullPath = (dirPath as NSString).appendingPathComponent(file)
+            if let attrs = try? fm.attributesOfItem(atPath: fullPath),
+               let size = attrs[.size] as? NSNumber {
+                total += size.int64Value
+            }
+        }
+        return total
     }
 
     private func startLiveLogStreaming() {
@@ -1138,6 +1176,7 @@ final class AppState: ObservableObject {
             Task { @MainActor in
                 self?.readNewLogLines(path: proxyLog, source: "AgentRouter")
                 self?.readNewLogLines(path: routerLog, source: "9Router")
+                self?.refreshLogDiskUsage()
             }
         }
     }
@@ -1503,7 +1542,41 @@ final class AppState: ObservableObject {
 
     func clearLogs() {
         logs.removeAll()
-        addLog("Activity logs cleared", level: .info, source: "System", notify: true)
+        cleanDiskLogs()
+    }
+
+    /// Truncate toàn bộ file trong ~/ai-stack/logs về 0 bytes và reset offset đọc log
+    private func cleanDiskLogs() {
+        let logDir = ("~/ai-stack/logs" as NSString).expandingTildeInPath
+        let oldFormatted = logDiskFormatted
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let fm = FileManager.default
+            if let files = try? fm.contentsOfDirectory(atPath: logDir) {
+                for file in files {
+                    let fullPath = (logDir as NSString).appendingPathComponent(file)
+                    // Truncate file về rỗng mà không xoá inode file đang mở bởi tiến trình khác
+                    if let handle = FileHandle(forWritingAtPath: fullPath) {
+                        try? handle.truncate(atOffset: 0)
+                        try? handle.close()
+                    }
+                }
+            }
+            let newTotal = Self.computeLogDirectoryBytes(logDir)
+            let newFormatted = ByteCountFormatter.string(fromByteCount: newTotal, countStyle: .file)
+
+            Task { @MainActor in
+                guard let self else { return }
+                self.logFileOffsets.removeAll()
+                self.logDiskBytes = newTotal
+                self.logDiskFormatted = newFormatted
+                self.addLog(
+                    "Đã xoá sạch logs và giải phóng dung lượng đĩa (\(oldFormatted) → \(newFormatted))",
+                    level: .success,
+                    source: "System",
+                    notify: true
+                )
+            }
+        }
     }
 
     func copyAllLogs() {
@@ -6719,7 +6792,7 @@ struct LogsView: View {
                         Button(role: .destructive) {
                             state.clearLogs()
                         } label: {
-                            Label("Xoá Logs", systemImage: "trash")
+                            Label("Xoá Logs (\(logsStore.logDiskFormatted))", systemImage: "trash")
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.regular)
@@ -6781,7 +6854,7 @@ struct LogsView: View {
                 }
 
                 // Log Entries List
-                SettingsCard(header: "Log Entries (\(filteredLogs.count))") {
+                SettingsCard(header: "Log Entries (\(filteredLogs.count)) • Dung lượng đĩa: \(logsStore.logDiskFormatted)") {
                     if filteredLogs.isEmpty {
                         VStack(spacing: DS.Sp.s) {
                             Image(systemName: "tray")
