@@ -24,6 +24,7 @@ _(Hoặc mở Terminal, gõ `cd ` rồi kéo thả thư mục dự án vào cử
 4. **Combo & Vision Adapter** trên Overview chỉ để **xem** model con + trạng thái; chọn combo ở đây không apply.
 5. Tắt toggle Cursor = chỉ tắt Funnel/Cursor path; 9Router/Codex local vẫn chạy.
 6. **Quit / Stop** app: tắt hết Funnel + 9Router + proxies.
+7. **Cursor Pro bắt buộc cho AI Gate:** gói **Free** chỉ dùng **Auto**, không chọn được named model (`my-combo`). Nếu hiện *Named models unavailable — Free plans can only use Auto* thì **Upgrade to Pro** rồi chọn lại combo — đừng bấm *Switch to Auto* nếu muốn đi qua AI Gate. Codex (local) không bị hạn chế này.
 
 Lệnh thủ công:
 

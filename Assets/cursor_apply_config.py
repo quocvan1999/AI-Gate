@@ -456,7 +456,10 @@ def apply(base_url: str, model: str, api_key: str, relaunch: bool) -> int:
         relaunch_cursor()
         restarted = True
 
-    msg = "Đã ghi Base URL + API key + đăng ký model (giống cấu hình tay trong Cursor Settings)."
+    msg = (
+        "Đã ghi Base URL + API key + đăng ký model (giống cấu hình tay trong Cursor Settings). "
+        "Cursor Free chỉ dùng Auto — cần Pro trở lên mới chọn được named model / AI Gate BYOK."
+    )
     if not encrypted:
         msg += " (Keychain encrypt không sẵn sàng — nếu Cursor không nhận key, mở Settings → Models dán key một lần.)"
     return out(

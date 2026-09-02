@@ -904,6 +904,11 @@ final class AppState: ObservableObject {
         \(key)
         4) Add custom model:
         \(model)
+
+        LƯU Ý (bắt buộc):
+        Cursor Free chỉ dùng được Auto — không chọn được model đặt tên như \(model).
+        Cần Cursor Pro (hoặc cao hơn) mới dùng AI Gate / BYOK.
+        Nếu hiện «Named models unavailable» → Upgrade to Pro, rồi chọn lại \(model).
         """
     }
 
@@ -3667,6 +3672,25 @@ struct CursorDetailsSheet: View {
                             }
                         }
                         .padding(16)
+                    }
+
+                    SettingsCard(header: "Yêu cầu Cursor Pro") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(Color.orange)
+                                    .font(.system(size: 16))
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Gói Free không chọn được model AI Gate")
+                                        .font(.system(size: 13, weight: .semibold))
+                                    Text("Nếu Cursor báo «Named models unavailable — Free plans can only use Auto»: cấu hình AI Gate đã đúng, nhưng tài khoản Cursor Free bị chặn named/BYOK model (ví dụ my-combo). Cần Upgrade to Pro rồi chọn lại combo — không bấm Switch to Auto nếu muốn dùng AI Gate.")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                        .padding(14)
                     }
 
                     SettingsCard(header: "Checklist") {

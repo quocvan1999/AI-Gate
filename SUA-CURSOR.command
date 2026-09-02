@@ -24,5 +24,6 @@ open -a Cursor
 
 echo ""
 echo "XONG. Trong Cursor: chọn model my-combo, Agent mode, chat hello."
+echo "LƯU Ý: Cursor Free bị chặn named model («Named models unavailable»). Cần Pro rồi chọn my-combo — đừng Switch to Auto."
 echo "Log: ~/ai-stack/logs/cursor-repair.log"
 read -r "?Nhấn Enter để đóng…" _
