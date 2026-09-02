@@ -3,3 +3,4 @@ build/
 dist/
 *.dmg
 *.zip
+node_modules/
